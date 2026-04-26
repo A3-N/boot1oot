@@ -118,6 +118,19 @@ The finished ISO is written to:
 dist/boot1oot.iso
 ```
 
+By default, the ISO also includes a 64 MiB FAT loot partition image appended to
+the hybrid ISO for USB artifact storage. Override its size with:
+
+```sh
+LOOT_SIZE=128M bash scripts/build.sh
+```
+
+Disable the appended loot partition with:
+
+```sh
+LOOT_SIZE=0 bash scripts/build.sh
+```
+
 ## Regenerate Only the ISO
 
 After bootloader/menu-only changes:
@@ -152,12 +165,17 @@ Example:
 ```sh
 BOOT1OOT_EXPORT_CONFIG=1
 BOOT1OOT_BITLOCKER_RECOVERY_KEY=000000-000000-000000-000000-000000-000000-000000-000000
+BOOT1OOT_LOOT_PASSPHRASE=change-this-for-encrypted-fallback-archives
 ```
 
 When `BOOT1OOT_EXPORT_CONFIG=1`, the build passes the key into the `boot1oot`
 binary and writes it into the ISO environment as
 `BOOT1OOT_BITLOCKER_RECOVERY_KEY`. If the variable is not present or is empty,
 `boot1oot` falls back to dislocker's interactive recovery-password prompt.
+`BOOT1OOT_LOOT_PASSPHRASE` is used only when `boot1oot loot` cannot write to
+the USB loot partition and needs to place an encrypted archive under
+`C:\Users\Public\Boot1oot`. If it is not set, Boot1oot uses the built-in
+fallback archive passphrase `boot1oot`.
 
 Only enable config export for lab images where baking the recovery key into the
 ISO is intentional.
@@ -179,6 +197,7 @@ The target ISO currently builds:
 - `dislocker-metadata`
 - `libdislocker`
 - `ntfs-3g`
+- `openssl`
 - target `libfuse3`
 - target `mbedtls`
 
@@ -207,10 +226,13 @@ The target ISO builds and installs:
 - `sampasswd`
 - `samusrgrp`
 
-`boot1oot chntpw -l` wraps `chntpw -l` against the detected local SAM hive.
+`boot1oot users` uses `reged -x` to export the relevant SAM user and alias
+branches under `/tmp`, copies `SAM` to `/tmp` for read-only decoding, then
+displays the decoded local SAM user table.
 Bare `boot1oot chntpw` lists users first, prompts for a username, then launches
 upstream chntpw interactively with the detected `SAM`, `SYSTEM`, and `SECURITY`
-hives. The wrapper no longer attempts to create or modify users itself.
+hives. The wrapper no longer exposes direct `-l` or `-u` shortcuts and no
+longer attempts to create or modify users itself.
 
 If you want to compile or test dislocker directly on the host outside Buildroot,
 install the native development packages too:

@@ -8,7 +8,7 @@ _boot1oot_complete()
 
 	cur="${COMP_WORDS[COMP_CWORD]}"
 	if [ "$COMP_CWORD" -eq 1 ]; then
-		COMPREPLY=( $(compgen -W "mount scan dislocker chntpw unmount init" -- "$cur") )
+		COMPREPLY=( $(compgen -W "mount scan dislocker users chntpw loot unmount init" -- "$cur") )
 		return 0
 	fi
 
@@ -16,9 +16,6 @@ _boot1oot_complete()
 	case "$cmd" in
 	mount|dislocker)
 		COMPREPLY=( $(compgen -W "-r --read-only -rw --read-write" -- "$cur") )
-		;;
-	chntpw)
-		COMPREPLY=( $(compgen -W "-l --list -u --user" -- "$cur") )
 		;;
 	*)
 		COMPREPLY=()

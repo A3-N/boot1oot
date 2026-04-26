@@ -160,6 +160,7 @@ boot1oot_missing_commands() {
 		grub-mkrescue
 		make
 		mcopy
+		mformat
 		patch
 		perl
 		python3

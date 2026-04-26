@@ -3,8 +3,11 @@
 This guide covers writing the Boot1oot ISO to USB media and booting it on
 physical machines or virtual machines.
 
-Boot1oot is a RAM-only live ISO. It does not need persistence and does not
-write to the USB after boot.
+Boot1oot uses a RAM-only live root filesystem. USB-written images include a
+small writable loot partition that can be mounted at `/loot` for audit
+artifacts. When booted as a read-only virtual ISO, `/loot` will usually be
+unavailable and tools should use the Windows-hosted encrypted archive fallback
+instead.
 
 ## Before You Boot
 
@@ -48,7 +51,8 @@ Windows can mount an ISO, but mounting is not the same as making a bootable USB.
 Use Rufus or another raw-image writer for USB boot media.
 
 For VMware, Hyper-V, or another hypervisor, attach `boot1oot.iso` directly as a
-virtual CD/DVD image.
+virtual CD/DVD image. A virtual CD/DVD is read-only, so the `/loot` USB
+partition path is not available in this mode.
 
 ## Linux USB Flashing
 
@@ -181,6 +185,39 @@ For VMware testing:
 
 Boot1oot supports both BIOS and UEFI boot paths.
 
+## Artifact Storage
+
+Preferred USB path:
+
+```sh
+boot1oot loot
+```
+
+This stages offline Windows-at-rest artifacts in RAM, mounts the Boot1oot loot
+partition at:
+
+```text
+/loot
+```
+
+It then copies the staged collection to `/loot/<collection-id>` and unmounts
+`/loot`. The generated ISO appends a FAT partition labeled `BOOT1OOT_LOOT`.
+When the ISO is written to a USB drive, that partition is writable and can hold
+the collection.
+
+Fallback Windows-host path:
+
+```text
+C:\Users\Public\Boot1oot
+```
+
+This fallback is for virtual ISO boots or systems where no writable USB loot
+partition is available. `boot1oot loot` creates an OpenSSL-encrypted
+`<collection-id>.tar.enc` archive before placing artifacts there, because the
+folder is intentionally readable by normal local users for easy retrieval after
+Windows boots. Set `BOOT1OOT_LOOT_PASSPHRASE` before running the command if you
+do not want to use the built-in fallback passphrase `boot1oot`.
+
 ## After Boot
 
 The system drops to a minimal `boot1oot` shell. Start with:
@@ -188,6 +225,7 @@ The system drops to a minimal `boot1oot` shell. Start with:
 ```sh
 boot1oot scan
 boot1oot mount
+boot1oot loot
 ```
 
 For write-capable Windows filesystem work:

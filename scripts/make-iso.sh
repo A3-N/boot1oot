@@ -8,6 +8,9 @@ output_dir="${OUTPUT_DIR:-$(boot1oot_default_output_dir "$repo_root")}"
 dist_dir="${DIST_DIR:-$repo_root/dist}"
 iso_root="${ISO_ROOT:-$output_dir/iso-root}"
 iso_path="${ISO_PATH:-$dist_dir/boot1oot.iso}"
+loot_size="${LOOT_SIZE:-64M}"
+loot_img="$output_dir/images/loot.img"
+loot_sentinel="$output_dir/images/boot1oot-loot.sentinel"
 
 kernel="$output_dir/images/bzImage"
 initramfs="$output_dir/images/rootfs.cpio.gz"
@@ -25,6 +28,12 @@ fi
 if ! command -v grub-mkrescue >/dev/null 2>&1; then
 	echo "grub-mkrescue is required to create the BIOS/UEFI ISO." >&2
 	echo "On Debian/Ubuntu/WSL: sudo apt install grub-common grub-pc-bin grub-efi-amd64-bin xorriso mtools" >&2
+	exit 1
+fi
+
+if [[ "$loot_size" != "0" ]] && ! command -v mformat >/dev/null 2>&1; then
+	echo "mformat is required to create the persistent loot partition image." >&2
+	echo "On Debian/Ubuntu/WSL: sudo apt install mtools" >&2
 	exit 1
 fi
 
@@ -47,6 +56,19 @@ done
 
 if [[ -n "$grub_font" ]]; then
 	cp "$grub_font" "$iso_root/boot/grub/fonts/unicode.pf2"
+fi
+
+grub_extra_args=()
+if [[ "$loot_size" != "0" ]]; then
+	rm -f "$loot_img" "$loot_sentinel"
+	truncate -s "$loot_size" "$loot_img"
+	mformat -i "$loot_img" -F -v BOOT1OOT_LOOT ::
+	cat > "$loot_sentinel" <<'EOF'
+Boot1oot persistent loot partition.
+Do not remove this file; boot1oot uses it to identify /loot safely.
+EOF
+	mcopy -i "$loot_img" "$loot_sentinel" ::/.boot1oot-loot
+	grub_extra_args=(-append_partition 4 0x0c "$loot_img" -partition_cyl_align all)
 fi
 
 cat > "$iso_root/boot/grub/grub.cfg" <<'EOF'
@@ -78,5 +100,8 @@ menuentry "Boot1oot Linux - RAM only" {
 }
 EOF
 
-grub-mkrescue -o "$iso_path" "$iso_root" >/dev/null
+grub-mkrescue -o "$iso_path" "$iso_root" "${grub_extra_args[@]}" >/dev/null
 printf 'ISO written to %s\n' "$iso_path"
+if [[ "$loot_size" != "0" ]]; then
+	printf 'Persistent loot partition appended: %s (%s, label BOOT1OOT_LOOT)\n' "$loot_img" "$loot_size"
+fi

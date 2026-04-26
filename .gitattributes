@@ -3,6 +3,7 @@
 *.c text eol=lf
 *.h text eol=lf
 *.sh text eol=lf
+*.bashrc text eol=lf
 *.ps1 text eol=lf
 *.mk text eol=lf
 *.patch text eol=lf
