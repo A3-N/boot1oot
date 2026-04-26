@@ -10,6 +10,43 @@ live in [ISO.md](ISO.md).
 
 [Download latest release](https://github.com/A3-N/boot1oot/releases/latest)
 
+```
+       .--------.
+      / .------. \
+     | |        \ \
+     | |        | |
+    ____________| |_
+  .'  x         |_| '.
+  '._____ ____ _____.'
+  |     .'____'.     |
+  '.__.'.'    '.'.__.'
+  '.__  boot1oot  __.'
+  |   '.'.____.'.'   |
+  '.____'.____.'____.'
+  '.________________.'
+     - github.com/A3-N
+
+     Credits
+     +-----------+--------------------------------+
+     | tool      | source                         |
+     +-----------+--------------------------------+
+     | dislocker | github.com/Aorimn/dislocker    |
+     | chntpw    | pogostick.net/~pnh/ntpasswd    |
+     +-----------+--------------------------------+
+
+  usage: boot1oot <command> [options]
+
+  commands:
+    chntpw    list users, prompt, then launch upstream chntpw
+    dislocker [-r|-rw] unlock and mount all BitLocker Windows volumes
+    mount     [-r|-rw] scan and mount all Windows volumes
+    scan      list NTFS and BitLocker candidate volumes
+    users     export SAM user data with reged and show decoded users
+    loot      collect offline Windows secrets to USB loot or encrypted fallback
+    unmount   unmount Boot1oot Windows and dislocker mountpoints
+    init      show the OS banner and start the shell
+```
+
 ![alt text](img/boot1oot.gif)
 
 ## ISO Profile
