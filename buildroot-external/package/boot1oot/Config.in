@@ -1,0 +1,4 @@
+config BR2_PACKAGE_BOOT1OOT
+	bool "boot1oot"
+	help
+	  Minimal launcher for the Boot1oot RAM-only live ISO.

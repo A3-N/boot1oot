@@ -1,0 +1,9 @@
+.gitignore text eol=lf
+*.md text eol=lf
+*.sh text eol=lf
+*.mk text eol=lf
+*.config text eol=lf
+*_defconfig text eol=lf
+Config.in text eol=lf
+external.desc text eol=lf
+external.mk text eol=lf

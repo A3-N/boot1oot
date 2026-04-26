@@ -1,0 +1,2 @@
+source "$BR2_EXTERNAL_BOOT1OOT_PATH/package/boot1oot/Config.in"
+source "$BR2_EXTERNAL_BOOT1OOT_PATH/package/dislocker/Config.in"

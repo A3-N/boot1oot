@@ -1,0 +1,8 @@
+config BR2_PACKAGE_DISLOCKER
+	bool "dislocker"
+	select BR2_PACKAGE_LIBFUSE3
+	select BR2_PACKAGE_MBEDTLS
+	help
+	  FUSE driver to read BitLocker encrypted volumes.
+
+	  https://github.com/Aorimn/dislocker

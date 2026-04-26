@@ -51,5 +51,22 @@ Module.symvers
 Mkfile.old
 dkms.conf
 
+# Buildroot and ISO build output
+/buildroot/
+/buildroot-output/
+/iso-root/
+/dist/
+/dl/
+
+# Local build-time secrets/config
+/config/boot1oot.local.env
+
+# Generated images
+*.iso
+*.img
+*.cpio
+*.cpio.gz
+*.vmdk
+
 # debug information files
 *.dwo

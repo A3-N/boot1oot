@@ -1,0 +1,9 @@
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export HOME=/root
+export PS1='\w/ \h$ '
+umask 077
+
+for profile_script in /etc/profile.d/*.sh; do
+	[ -r "$profile_script" ] && . "$profile_script"
+done
+unset profile_script
