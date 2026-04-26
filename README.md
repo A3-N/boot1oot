@@ -8,6 +8,8 @@ Most users should download the release ISO and boot it directly. Build and setup
 instructions live in [SETUP.md](SETUP.md). USB flashing and boot instructions
 live in [ISO.md](ISO.md).
 
+[Download latest release](https://github.com/A3-N/boot1oot/releases/latest)
+
 ![alt text](img/boot1oot.gif)
 
 ## ISO Profile
