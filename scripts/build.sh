@@ -46,6 +46,9 @@ make -C "$buildroot_dir" O="$output_dir" BR2_EXTERNAL="$repo_root/buildroot-exte
 if [[ -d "$output_dir/build/boot1oot-0.1" ]]; then
 	make -C "$buildroot_dir" O="$output_dir" BR2_EXTERNAL="$repo_root/buildroot-external" BR2_DL_DIR="$dl_dir" boot1oot-dirclean
 fi
+if [[ -d "$output_dir/build/chntpw-140201" ]]; then
+	make -C "$buildroot_dir" O="$output_dir" BR2_EXTERNAL="$repo_root/buildroot-external" BR2_DL_DIR="$dl_dir" chntpw-dirclean
+fi
 rm -f "$output_dir/images/rootfs.cpio" "$output_dir/images/rootfs.cpio.gz"
 
 make -C "$buildroot_dir" O="$output_dir" BR2_EXTERNAL="$repo_root/buildroot-external" BR2_DL_DIR="$dl_dir" -j"$jobs"

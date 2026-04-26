@@ -1,0 +1,15 @@
+ntreg.h uses int32_t in on-disk registry hive structures but does not include
+stdint.h. Some libc/header combinations expose int32_t indirectly; musl does
+not, so include the defining header directly.
+
+--- a/ntreg.h
++++ b/ntreg.h
+@@ -24,6 +24,8 @@
+ #ifndef _INCLUDE_NTREG_H
+ #define _INCLUDE_NTREG_H 1
+ 
++#include <stdint.h>
++
+ #define SZ_MAX     4096       /* Max unicode strlen before we truncate */
+ 
+ #define KEY_ROOT   0x2c         /* Type ID of ROOT key node */

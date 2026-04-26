@@ -5,13 +5,14 @@ from outside the installed OS. It is built to boot alongside Windows, discover
 Windows volumes, and mount them for inspection without persistence.
 
 Most users should download the release ISO and boot it directly. Build and setup
-instructions live in [SETUP.md](SETUP.md).
+instructions live in [SETUP.md](SETUP.md). USB flashing and boot instructions
+live in [ISO.md](ISO.md).
 
 ## ISO Profile
 
 - x86_64 Linux kernel
 - BIOS and UEFI boot support
-- BusyBox init and shell
+- BusyBox init with an interactive bash console
 - RAM-only initramfs root filesystem
 - no configured persistence
 - no kernel networking support
@@ -24,8 +25,13 @@ instructions live in [SETUP.md](SETUP.md).
   helper.
 - `dislocker-fuse`: unlocks BitLocker volumes through FUSE.
 - `dislocker-metadata`: prints BitLocker metadata before unlock attempts.
+- `chntpw`: interactive offline Windows SAM/registry editor and user lister.
+- `samusrgrp`: local SAM group membership helper for manual workflows.
+- `sampasswd`: noninteractive local SAM password reset helper.
+- `reged`: offline registry export/import/editor helper.
 - `ntfs-3g`: mounts dislocker's decrypted `dislocker-file`.
 - kernel `ntfs3`: mounts normal unencrypted NTFS partitions.
+- `bash`: console shell with `boot1oot` subcommand completion.
 - BusyBox userland: minimal shell and basic Unix commands.
 
 The ISO credits dislocker from `github.com/Aorimn/dislocker` and chntpw from
@@ -66,6 +72,13 @@ NTFS, then mounts the exposed `dislocker-file` with `ntfs-3g`.
 
 ## Commands
 
+The console supports tab completion for `boot1oot` subcommands:
+
+```sh
+boot1oot <tab>
+boot1oot chntpw -<tab>
+```
+
 Scan without mounting:
 
 ```sh
@@ -92,6 +105,40 @@ boot1oot dislocker
 boot1oot dislocker -rw
 ```
 
+List local SAM users:
+
+```sh
+boot1oot chntpw -l
+```
+
+Launch chntpw interactively. This lists users first, prompts for a username,
+then runs chntpw with the detected `SAM`, `SYSTEM`, and `SECURITY` hives:
+
+```sh
+boot1oot chntpw
+```
+
+Launch chntpw directly for one user:
+
+```sh
+boot1oot chntpw -u Administrator
+```
+
+`boot1oot chntpw -l` mounts read-only if needed and runs:
+
+```text
+chntpw -l /mnt/windows/<device>/Windows/System32/config/SAM
+```
+
+The interactive edit path mounts read-write if needed and runs:
+
+```text
+chntpw -u <user> SAM SYSTEM SECURITY
+```
+
+The raw `chntpw`, `sampasswd`, `samusrgrp`, and `reged` tools are also included
+for manual research workflows.
+
 Unmount Boot1oot-managed Windows and dislocker mountpoints:
 
 ```sh
@@ -104,17 +151,6 @@ Shut down:
 ```sh
 poweroff
 ```
-
-## Output
-
-Boot1oot prefixes its own status lines:
-
-- green `[+]`: success
-- red `[!]`: failure
-- blue `[*]`: informational
-
-Output from wrapped tools, such as dislocker's own `[INFO]` lines, is left
-unchanged.
 
 ## VMware Test Notes
 

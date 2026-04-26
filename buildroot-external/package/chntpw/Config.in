@@ -1,0 +1,9 @@
+config BR2_PACKAGE_CHNTPW
+	bool "chntpw"
+	help
+	  Offline Windows registry/SAM editor and helper tools.
+
+	  Boot1oot installs chntpw, reged, sampasswd, and samusrgrp
+	  from the upstream source archive.
+
+	  https://pogostick.net/~pnh/ntpasswd/

@@ -544,6 +544,38 @@ static void print_dislocker_metadata(const char *dev)
 		print_fail("dislocker: metadata unavailable for %s", dev);
 }
 
+static int run_sbin_program(char *const argv[])
+{
+	pid_t pid;
+	int status;
+
+	pid = fork();
+	if (pid < 0) {
+		print_fail("%s: fork failed: %s", argv[0], strerror(errno));
+		return 127;
+	}
+
+	if (pid == 0) {
+		char path[128];
+
+		snprintf(path, sizeof(path), "/usr/sbin/%s", argv[0]);
+		execv(path, argv);
+		execvp(argv[0], argv);
+		fprintf(stderr, "%s: cannot exec: %s\n", argv[0], strerror(errno));
+		_exit(127);
+	}
+
+	if (waitpid(pid, &status, 0) < 0) {
+		print_fail("%s: wait failed: %s", argv[0], strerror(errno));
+		return 127;
+	}
+
+	if (!WIFEXITED(status))
+		return 127;
+
+	return WEXITSTATUS(status);
+}
+
 static void print_scan_summary(const struct candidate *candidates, int count)
 {
 	int ntfs = 0;
@@ -816,6 +848,280 @@ static int scan_and_mount_windows(enum mount_mode mode)
 	return 1;
 }
 
+static int find_windows_config_hive(const char *mountpoint, const char *hive,
+				    char *out, size_t out_len)
+{
+	const char *lower = NULL;
+	const char *dirs[] = {
+		"Windows/System32/config",
+		"WINDOWS/System32/config",
+		"WINDOWS/system32/config",
+		"windows/System32/config",
+		"windows/system32/config",
+		NULL,
+	};
+	size_t i;
+
+	if (strcmp(hive, "SAM") == 0)
+		lower = "sam";
+	else if (strcmp(hive, "SYSTEM") == 0)
+		lower = "system";
+	else if (strcmp(hive, "SECURITY") == 0)
+		lower = "security";
+
+	for (i = 0; dirs[i]; i++) {
+		char path[256];
+
+		snprintf(path, sizeof(path), "%s/%s/%s", mountpoint, dirs[i], hive);
+		if (path_exists(path)) {
+			snprintf(out, out_len, "%s", path);
+			return 0;
+		}
+
+		if (!lower)
+			continue;
+
+		snprintf(path, sizeof(path), "%s/%s/%s", mountpoint, dirs[i], lower);
+		if (path_exists(path)) {
+			snprintf(out, out_len, "%s", path);
+			return 0;
+		}
+	}
+
+	return -1;
+}
+
+static int find_mounted_windows_root(char *mountpoint, size_t mountpoint_len)
+{
+	DIR *dir;
+	struct dirent *entry;
+	int roots = 0;
+
+	dir = opendir(WIN_MOUNT_ROOT);
+	if (!dir) {
+		if (errno == ENOENT)
+			return 2;
+
+		print_fail("chntpw failed: cannot open %s: %s", WIN_MOUNT_ROOT, strerror(errno));
+		return 1;
+	}
+
+	while ((entry = readdir(dir)) != NULL) {
+		char candidate[256];
+		struct stat st;
+
+		if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+			continue;
+
+		snprintf(candidate, sizeof(candidate), "%s/%s", WIN_MOUNT_ROOT, entry->d_name);
+		if (stat(candidate, &st) != 0 || !S_ISDIR(st.st_mode))
+			continue;
+
+		if (classify_mounted_ntfs(candidate) != FS_ROLE_WINDOWS_ROOT)
+			continue;
+
+		if (roots == 0)
+			snprintf(mountpoint, mountpoint_len, "%s", candidate);
+		roots++;
+	}
+
+	closedir(dir);
+
+	if (roots == 0)
+		return 2;
+
+	if (roots > 1)
+		print_info("chntpw: %d Windows roots mounted; using %s", roots, mountpoint);
+
+	return 0;
+}
+
+static int ensure_chntpw_root(char *mountpoint, size_t mountpoint_len, enum mount_mode mount_mode)
+{
+	int rc;
+
+	print_info("chntpw: looking for mounted Windows root filesystems");
+	rc = find_mounted_windows_root(mountpoint, mountpoint_len);
+	if (rc == 2) {
+		print_info("chntpw: no mounted Windows root found; attempting automatic %s mount",
+			   mount_mode_name(mount_mode));
+		if (scan_and_mount_windows(mount_mode) != 0)
+			return 1;
+		rc = find_mounted_windows_root(mountpoint, mountpoint_len);
+	}
+	if (rc != 0)
+		return 1;
+
+	print_info("chntpw: selected Windows root %s", mountpoint);
+	return 0;
+}
+
+static int ensure_chntpw_hives(char *mountpoint, size_t mountpoint_len,
+			       enum mount_mode mount_mode,
+			       char *sam_path, size_t sam_len,
+			       char *system_path, size_t system_len,
+			       char *security_path, size_t security_len)
+{
+	if (ensure_chntpw_root(mountpoint, mountpoint_len, mount_mode) != 0)
+		return 1;
+
+	if (find_windows_config_hive(mountpoint, "SAM", sam_path, sam_len) != 0) {
+		print_fail("chntpw failed: SAM hive not found under %s", mountpoint);
+		return 1;
+	}
+
+	if (find_windows_config_hive(mountpoint, "SYSTEM", system_path, system_len) != 0) {
+		print_fail("chntpw failed: SYSTEM hive not found under %s", mountpoint);
+		return 1;
+	}
+
+	if (find_windows_config_hive(mountpoint, "SECURITY", security_path, security_len) != 0) {
+		print_fail("chntpw failed: SECURITY hive not found under %s", mountpoint);
+		return 1;
+	}
+
+	print_info("chntpw: SAM      %s", sam_path);
+	print_info("chntpw: SYSTEM   %s", system_path);
+	print_info("chntpw: SECURITY %s", security_path);
+	return 0;
+}
+
+static int ensure_chntpw_sam(char *mountpoint, size_t mountpoint_len,
+			     enum mount_mode mount_mode,
+			     char *sam_path, size_t sam_len)
+{
+	if (ensure_chntpw_root(mountpoint, mountpoint_len, mount_mode) != 0)
+		return 1;
+
+	if (find_windows_config_hive(mountpoint, "SAM", sam_path, sam_len) != 0) {
+		print_fail("chntpw failed: SAM hive not found under %s", mountpoint);
+		return 1;
+	}
+
+	print_info("chntpw: SAM %s", sam_path);
+	return 0;
+}
+
+static int ensure_file_writable(const char *path)
+{
+	int fd;
+
+	fd = open(path, O_RDWR | O_CLOEXEC);
+	if (fd < 0)
+		return -1;
+
+	close(fd);
+	return 0;
+}
+
+static int run_chntpw_list(enum mount_mode mount_mode)
+{
+	char mountpoint[256];
+	char sam_path[256];
+	char *const argv[] = {
+		"chntpw",
+		"-l",
+		sam_path,
+		NULL,
+	};
+
+	if (ensure_chntpw_sam(mountpoint, sizeof(mountpoint), mount_mode,
+			      sam_path, sizeof(sam_path)) != 0)
+		return 1;
+
+	print_info("chntpw: listing local SAM users");
+	return run_sbin_program(argv);
+}
+
+static int prompt_chntpw_username(char *username, size_t username_len)
+{
+	char *start;
+	char *end;
+
+	fputs("chntpw user> ", stdout);
+	fflush(stdout);
+
+	if (!fgets(username, username_len, stdin))
+		return -1;
+
+	start = username;
+	while (*start == ' ' || *start == '\t')
+		start++;
+
+	end = start + strlen(start);
+	while (end > start &&
+	       (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' ' || end[-1] == '\t')) {
+		end--;
+		*end = '\0';
+	}
+
+	if (start != username)
+		memmove(username, start, strlen(start) + 1);
+
+	return username[0] ? 0 : -1;
+}
+
+static int run_chntpw_edit(const char *username)
+{
+	char mountpoint[256];
+	char sam_path[256];
+	char system_path[256];
+	char security_path[256];
+	char *const argv[] = {
+		"chntpw",
+		"-u",
+		(char *)username,
+		sam_path,
+		system_path,
+		security_path,
+		NULL,
+	};
+
+	if (ensure_chntpw_hives(mountpoint, sizeof(mountpoint), MOUNT_READ_WRITE,
+				sam_path, sizeof(sam_path),
+				system_path, sizeof(system_path),
+				security_path, sizeof(security_path)) != 0)
+		return 1;
+
+	if (ensure_file_writable(sam_path) != 0) {
+		print_fail("chntpw: SAM hive is not writable: %s", strerror(errno));
+		print_fail("chntpw: run 'boot1oot unmount' and then 'boot1oot mount -rw'");
+		return 1;
+	}
+
+	print_info("chntpw: launching interactive editor for local SAM user '%s'", username);
+	return run_sbin_program(argv);
+}
+
+static int run_chntpw(int argc, char **argv)
+{
+	char username[128];
+
+	if (ensure_runtime_filesystems() != 0) {
+		print_fail("chntpw failed: runtime filesystem setup failed");
+		return 1;
+	}
+
+	if (argc == 3 && (strcmp(argv[2], "-l") == 0 || strcmp(argv[2], "--list") == 0))
+		return run_chntpw_list(MOUNT_READ_ONLY);
+
+	if (argc == 4 && (strcmp(argv[2], "-u") == 0 || strcmp(argv[2], "--user") == 0))
+		return run_chntpw_edit(argv[3]);
+
+	if (argc != 2)
+		return 2;
+
+	if (run_chntpw_list(MOUNT_READ_WRITE) != 0)
+		return 1;
+
+	if (prompt_chntpw_username(username, sizeof(username)) != 0) {
+		print_fail("chntpw failed: no user selected");
+		return 1;
+	}
+
+	return run_chntpw_edit(username);
+}
+
 static int unmount_children(const char *root)
 {
 	DIR *dir;
@@ -927,6 +1233,9 @@ static void print_usage(FILE *out)
 	fputs("usage: boot1oot <command> [options]\n"
 	      "\n"
 	      "commands:\n"
+	      "  chntpw           list users, prompt, then launch chntpw -u <user>\n"
+	      "  chntpw -l        list local SAM users\n"
+	      "  chntpw -u <user> launch chntpw for a selected local SAM user\n"
 	      "  dislocker [-r|-rw] unlock and mount all BitLocker Windows volumes\n"
 	      "  mount    [-r|-rw] scan and mount all Windows volumes\n"
 	      "  scan     list NTFS and BitLocker candidate volumes\n"
@@ -937,8 +1246,8 @@ static void print_usage(FILE *out)
 
 static int run_init(void)
 {
-	const char *shell = "/bin/sh";
-	char *const argv[] = { "sh", NULL };
+	char *const bash_argv[] = { "bash", "--rcfile", "/etc/boot1oot.bashrc", "-i", NULL };
+	char *const sh_argv[] = { "sh", NULL };
 
 	sethostname("boot1oot", strlen("boot1oot"));
 	setenv("HOME", "/root", 1);
@@ -950,8 +1259,9 @@ static int run_init(void)
 	print_banner();
 	fflush(stdout);
 
-	execv(shell, argv);
-	fprintf(stderr, "failed to exec %s: %s\n", shell, strerror(errno));
+	execv("/bin/bash", bash_argv);
+	execv("/bin/sh", sh_argv);
+	fprintf(stderr, "failed to exec shell: %s\n", strerror(errno));
 	return 127;
 }
 
@@ -982,6 +1292,14 @@ int main(int argc, char **argv)
 
 	if (strcmp(argv[1], "scan") == 0 && argc == 2)
 		return scan_only();
+
+	if (strcmp(argv[1], "chntpw") == 0) {
+		int rc = run_chntpw(argc, argv);
+
+		if (rc == 2)
+			print_usage(stderr);
+		return rc;
+	}
 
 	if (strcmp(argv[1], "unmount") == 0 && argc == 2)
 		return run_unmount();

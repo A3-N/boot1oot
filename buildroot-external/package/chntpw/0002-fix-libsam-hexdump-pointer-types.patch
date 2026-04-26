@@ -1,0 +1,34 @@
+libsam.c passes the address of an integer data offset to hexdump(), whose
+prototype expects a byte pointer. Newer GCC versions treat the incompatible
+pointer type as a hard error, so cast the debug-only hexdump input explicitly.
+Also print the debug pointer with %p.
+
+--- a/libsam.c
++++ b/libsam.c
+@@ -511,7 +511,7 @@
+ 
+      if (gverbose) printf("put_grp_members_sid: ajusted: mofs = %x, mlen = %x (%d)\n", mofs + 0x34 ,mlen,mlen);
+ 
+-     if (gverbose) hexdump(&c->data, 0, c->len, 1);
++     if (gverbose) hexdump((char *)&c->data, 0, c->len, 1);
+ 
+     /* Get total size of new SID data */
+ 
+@@ -529,7 +529,7 @@
+     sidptr = &cd->data[mofs];
+ 
+     for (i = 0; sarray[i].sidptr; i++) {
+-      if (gverbose) printf("  copying : %d len %x, at %x\n",i,sarray[i].len, sidptr);
++      if (gverbose) printf("  copying : %d len %x, at %p\n",i,sarray[i].len, (void *)sidptr);
+       str = sam_sid_to_string(sarray[i].sidptr);
+       if (gverbose) printf("  Member # %d = <%s>\n", i, str);
+       FREE(str);      
+@@ -542,7 +542,7 @@
+     cd->members_len = sidlen;  /* Update member count in C struct */
+     cd->grp_members = i;
+ 
+-    if (gverbose) hexdump(&c->data, 0, c->len, 1);
++    if (gverbose) hexdump((char *)&c->data, 0, c->len, 1);
+ 
+     if (!put_buf2val(hdesc, c, 0, g, 0, TPF_VK_EXACT)) {
+       fprintf(stderr,"put_grp_members_sid: could not write back group info in value %s\n",g);

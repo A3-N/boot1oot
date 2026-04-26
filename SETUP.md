@@ -170,6 +170,11 @@ needs.
 
 The target ISO currently builds:
 
+- `bash`
+- `chntpw`
+- `reged`
+- `sampasswd`
+- `samusrgrp`
 - `dislocker-fuse`
 - `dislocker-metadata`
 - `libdislocker`
@@ -185,6 +190,27 @@ https://github.com/Aorimn/dislocker.git
 
 It is pinned in `buildroot-external/package/dislocker/dislocker.mk` to a fixed
 commit rather than tracking a moving branch.
+
+## Chntpw Build Notes
+
+You do not need to install `chntpw` on the host to build the ISO. Boot1oot
+downloads the upstream source archive during the Buildroot build:
+
+```text
+https://pogostick.net/~pnh/ntpasswd/chntpw-source-140201.zip
+```
+
+The target ISO builds and installs:
+
+- `chntpw`
+- `reged`
+- `sampasswd`
+- `samusrgrp`
+
+`boot1oot chntpw -l` wraps `chntpw -l` against the detected local SAM hive.
+Bare `boot1oot chntpw` lists users first, prompts for a username, then launches
+upstream chntpw interactively with the detected `SAM`, `SYSTEM`, and `SECURITY`
+hives. The wrapper no longer attempts to create or modify users itself.
 
 If you want to compile or test dislocker directly on the host outside Buildroot,
 install the native development packages too:
