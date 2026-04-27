@@ -1,5 +1,4 @@
 ::sysinit:/etc/init.d/rcS
-tty1::respawn:/usr/sbin/boot1oot init
-ttyS0::respawn:/usr/sbin/boot1oot init
+console::respawn:/usr/sbin/boot1oot init
 ::ctrlaltdel:/sbin/reboot
 ::shutdown:/etc/init.d/rcK

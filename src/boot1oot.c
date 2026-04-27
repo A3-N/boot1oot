@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1969,23 +1970,101 @@ static int parse_mount_mode(int argc, char **argv, enum mount_mode *mode)
 	return -1;
 }
 
+static int active_console_path(char *path, size_t path_len)
+{
+	char active[128];
+	char *token;
+	char *chosen = NULL;
+	ssize_t got;
+	int fd;
+
+	fd = open("/sys/class/tty/console/active", O_RDONLY | O_CLOEXEC);
+	if (fd < 0)
+		goto fallback;
+
+	got = read(fd, active, sizeof(active) - 1);
+	close(fd);
+	if (got <= 0)
+		goto fallback;
+
+	active[got] = '\0';
+	for (token = strtok(active, " \t\r\n"); token; token = strtok(NULL, " \t\r\n")) {
+		chosen = token;
+		if (strcmp(token, "tty0") == 0) {
+			chosen = "tty1";
+			break;
+		}
+	}
+
+	if (chosen && snprintf(path, path_len, "/dev/%s", chosen) < (int)path_len)
+		return 0;
+
+fallback:
+	if (snprintf(path, path_len, "/dev/console") >= (int)path_len)
+		return -1;
+	return 0;
+}
+
+static int setup_controlling_terminal(void)
+{
+	char path[64];
+	int fd;
+	int flags;
+
+	fd = open("/dev/tty", O_RDWR | O_CLOEXEC);
+	if (fd >= 0) {
+		close(fd);
+		return 0;
+	}
+
+	if (active_console_path(path, sizeof(path)) != 0)
+		return -1;
+
+	if (setsid() != 0 && errno != EPERM)
+		return -1;
+
+	fd = open(path, O_RDWR | O_NONBLOCK);
+	if (fd < 0 && strcmp(path, "/dev/console") != 0)
+		fd = open("/dev/console", O_RDWR | O_NONBLOCK);
+	if (fd < 0)
+		return -1;
+
+	(void)ioctl(fd, TIOCSCTTY, 1);
+	flags = fcntl(fd, F_GETFL);
+	if (flags >= 0)
+		(void)fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
+
+	dup2(fd, STDIN_FILENO);
+	dup2(fd, STDOUT_FILENO);
+	dup2(fd, STDERR_FILENO);
+	if (fd > STDERR_FILENO)
+		close(fd);
+
+	return 0;
+}
+
 static int run_init(void)
 {
 	char *const bash_argv[] = { "bash", "--rcfile", "/etc/boot1oot.bashrc", "-i", NULL };
-	char *const sh_argv[] = { "sh", NULL };
+	char *const sh_argv[] = { "sh", "-i", NULL };
 
 	sethostname("boot1oot", strlen("boot1oot"));
 	setenv("HOME", "/root", 1);
+	setenv("PATH", "/bin:/sbin:/usr/bin:/usr/sbin", 1);
+	setenv("PS1", "\\w/ \\h$ ", 1);
 	if (BOOT1OOT_BUILTIN_BITLOCKER_RECOVERY_KEY[0])
 		setenv(BOOT1OOT_RECOVERY_KEY_ENV, BOOT1OOT_BUILTIN_BITLOCKER_RECOVERY_KEY, 0);
 	chdir("/root");
 
 	ensure_runtime_filesystems();
+	if (setup_controlling_terminal() != 0)
+		fprintf(stderr, "init: warning: cannot claim controlling terminal: %s\n", strerror(errno));
 	print_banner();
 	print_usage(stdout);
 	puts("");
 	fflush(stdout);
 
+	execv("/usr/bin/bash", bash_argv);
 	execv("/bin/bash", bash_argv);
 	execv("/bin/sh", sh_argv);
 	fprintf(stderr, "failed to exec shell: %s\n", strerror(errno));

@@ -79,9 +79,15 @@ set gfxmode=1024x768,800x600,640x480,auto
 set gfxpayload=keep
 
 insmod all_video
+if [ "$grub_platform" = "efi" ]; then
+	insmod efi_gop
+	insmod efi_uga
+fi
+if [ "$grub_platform" = "pc" ]; then
+	insmod vbe
+fi
 insmod video_bochs
 insmod video_cirrus
-insmod vbe
 insmod gfxterm
 
 if loadfont /boot/grub/fonts/unicode.pf2; then
