@@ -153,7 +153,7 @@ static void print_usage(FILE *out)
 	      "commands:\n"
 	      "  chntpw	list users, prompt, then launch upstream chntpw\n"
 	      "  dislocker	[-r|-rw] unlock and mount all BitLocker Windows volumes\n"
-	      "  mount    	[-r|-rw] scan and mount all Windows volumes\n"
+	      "  mount    	-r|-rw scan and mount all Windows volumes\n"
 	      "  scan     	list NTFS and BitLocker candidate volumes\n"
 	      "  users    	export SAM user data with reged and show decoded users\n"
 	      "  loot     	collect offline Windows secrets to USB loot or encrypted fallback\n"
@@ -327,6 +327,30 @@ static int load_candidates(struct candidate *candidates, size_t max)
 static int path_exists(const char *path)
 {
 	return access(path, F_OK) == 0;
+}
+
+static int path_is_mountpoint(const char *path)
+{
+	FILE *fp;
+	char line[512];
+	char mountpoint[256];
+
+	fp = fopen("/proc/self/mountinfo", "r");
+	if (!fp)
+		return 0;
+
+	while (fgets(line, sizeof(line), fp)) {
+		if (sscanf(line, "%*u %*u %*s %*s %255s", mountpoint) != 1)
+			continue;
+
+		if (strcmp(mountpoint, path) == 0) {
+			fclose(fp);
+			return 1;
+		}
+	}
+
+	fclose(fp);
+	return 0;
 }
 
 static int path_exists_under(const char *mountpoint, const char *relative)
@@ -701,6 +725,13 @@ static int mount_ntfs_candidate(const struct candidate *cand, enum mount_mode mo
 		return FS_ROLE_MOUNT_FAILED;
 	}
 
+	if (path_is_mountpoint(mountpoint)) {
+		role = classify_mounted_ntfs(mountpoint);
+		print_success("mount reuse: %s already mounted at %s [%s]",
+			      cand->path, mountpoint, fs_role_name(role));
+		return role;
+	}
+
 	print_info("ntfs: %s -> %s [%s]", cand->path, mountpoint, mount_mode_name(mode));
 
 	if (try_mount_ntfs(cand->path, mountpoint, mode) != 0) {
@@ -723,23 +754,41 @@ static int mount_bitlocker_candidate(const struct candidate *cand, enum mount_mo
 	char dislocker_file[160];
 	char mountpoint[128];
 	enum fs_role role;
+	enum mount_mode actual_mode = mode;
 
 	candidate_dislocker_mountpoint(cand, dislocker_mountpoint, sizeof(dislocker_mountpoint));
 	snprintf(dislocker_file, sizeof(dislocker_file), "%s/dislocker-file", dislocker_mountpoint);
 	candidate_mountpoint(cand, mountpoint, sizeof(mountpoint));
 
 	print_info("bitlocker: %s -> %s [%s]", cand->path, mountpoint, mount_mode_name(mode));
-	print_info("dislocker: metadata check follows");
-	print_dislocker_metadata(cand->path);
 
-	if (configured_recovery_key())
-		print_info("dislocker: using configured BitLocker recovery key");
-	else
-		print_info("dislocker: enter the BitLocker recovery password when prompted");
-
-	if (run_dislocker_fuse(cand->path, dislocker_mountpoint, mode) != 0) {
-		print_fail("mount failed: dislocker could not unlock %s", cand->path);
+	if (ensure_parent_dirs(mountpoint) != 0) {
+		print_fail("mount failed: cannot create %s: %s", mountpoint, strerror(errno));
 		return FS_ROLE_MOUNT_FAILED;
+	}
+
+	if (path_is_mountpoint(mountpoint)) {
+		role = classify_mounted_ntfs(mountpoint);
+		print_success("mount reuse: %s already mounted at %s [%s]",
+			      cand->path, mountpoint, fs_role_name(role));
+		return role;
+	}
+
+	if (path_exists(dislocker_file)) {
+		print_info("dislocker: reusing existing decrypted output %s", dislocker_file);
+	} else {
+		print_info("dislocker: metadata check follows");
+		print_dislocker_metadata(cand->path);
+
+		if (configured_recovery_key())
+			print_info("dislocker: using configured BitLocker recovery key");
+		else
+			print_info("dislocker: enter the BitLocker recovery password when prompted");
+
+		if (run_dislocker_fuse(cand->path, dislocker_mountpoint, mode) != 0) {
+			print_fail("mount failed: dislocker could not unlock %s", cand->path);
+			return FS_ROLE_MOUNT_FAILED;
+		}
 	}
 
 	if (!path_exists(dislocker_file)) {
@@ -758,20 +807,27 @@ static int mount_bitlocker_candidate(const struct candidate *cand, enum mount_mo
 		}
 	}
 
-	if (ensure_parent_dirs(mountpoint) != 0) {
-		print_fail("mount failed: cannot create %s: %s", mountpoint, strerror(errno));
-		return FS_ROLE_MOUNT_FAILED;
-	}
-
 	if (try_mount_ntfs3g_file(dislocker_file, mountpoint, mode) != 0) {
+		if (mode == MOUNT_READ_WRITE) {
+			print_fail("mount: %s read-write ntfs-3g failed; retrying read-only",
+				   dislocker_file);
+			if (try_mount_ntfs3g_file(dislocker_file, mountpoint, MOUNT_READ_ONLY) == 0) {
+				actual_mode = MOUNT_READ_ONLY;
+				print_fail("mount: %s is mounted read-only after read-write failure",
+					   cand->path);
+				goto mounted_ntfs;
+			}
+		}
+
 		print_fail("mount: %s final ntfs-3g failure: %s", dislocker_file, strerror(errno));
 		print_fail("mount failed: could not mount decrypted NTFS volume from %s", cand->path);
 		return FS_ROLE_MOUNT_FAILED;
 	}
 
+mounted_ntfs:
 	role = classify_mounted_ntfs(mountpoint);
 	print_success("mount success: %s unlocked and mounted %s at %s [%s]",
-		      cand->path, mount_mode_name(mode), mountpoint, fs_role_name(role));
+		      cand->path, mount_mode_name(actual_mode), mountpoint, fs_role_name(role));
 
 	return role;
 }
@@ -1970,6 +2026,16 @@ static int parse_mount_mode(int argc, char **argv, enum mount_mode *mode)
 	return -1;
 }
 
+static int parse_required_mount_mode(int argc, char **argv, enum mount_mode *mode)
+{
+	if (argc == 2) {
+		print_fail("mount requires an explicit mode: use 'boot1oot mount -r' or 'boot1oot mount -rw'");
+		return -1;
+	}
+
+	return parse_mount_mode(argc, argv, mode);
+}
+
 static int active_console_path(char *path, size_t path_len)
 {
 	char active[128];
@@ -2081,7 +2147,7 @@ int main(int argc, char **argv)
 	}
 
 	if (strcmp(argv[1], "mount") == 0) {
-		if (parse_mount_mode(argc, argv, &mode) != 0) {
+		if (parse_required_mount_mode(argc, argv, &mode) != 0) {
 			print_usage(stderr);
 			return 2;
 		}

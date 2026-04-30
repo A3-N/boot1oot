@@ -1,98 +1,93 @@
 # boot1oot
 
-Boot1oot is a minimal RAM-only Linux live ISO for auditing Windows filesystems
-from outside the installed OS. It is built to boot alongside Windows, discover
-Windows volumes, and mount them for inspection without persistence.
+Boot1oot is a small RAM-only Linux live environment for offline Windows
+filesystem audit work. It can scan NTFS and BitLocker volumes, mount Windows
+filesystems read-only or read-write, collect selected offline artifacts, and
+unmount cleanly before returning to Windows.
 
-Most users should download the release ISO and boot it directly. Build and setup
-instructions live in [SETUP.md](SETUP.md). USB flashing and boot instructions
-live in [ISO.md](ISO.md).
+Recommended: [download the latest release](https://github.com/A3-N/boot1oot/releases/latest)
 
-[Download latest release](https://github.com/A3-N/boot1oot/releases/latest)
+Manual compile instructions: [SETUP.md](SETUP.md)
 
-```
-       .--------.
-      / .------. \
-     | |        \ \
-     | |        | |
-    ____________| |_
-  .'  x         |_| '.
-  '._____ ____ _____.'
-  |     .'____'.     |
-  '.__.'.'    '.'.__.'
-  '.__  boot1oot  __.'
-  |   '.'.____.'.'   |
-  '.____'.____.'____.'
-  '.________________.'
-     - github.com/A3-N
+USB and VM boot instructions: [ISO.md](ISO.md)
 
-     Credits
-     +-----------+--------------------------------+
-     | tool      | source                         |
-     +-----------+--------------------------------+
-     | dislocker | github.com/Aorimn/dislocker    |
-     | chntpw    | pogostick.net/~pnh/ntpasswd    |
-     +-----------+--------------------------------+
+## CLI Preview
 
-  usage: boot1oot <command> [options]
+```text
+     .--------.
+    / .------. \
+   | |        \ \
+   | |        | |
+  ____________| |_
+.'  x         |_| '.
+'._____ ____ _____.'
+|     .'____'.     |
+'.__.'.'    '.'.__.'
+'.__  boot1oot  __.'
+|   '.'.____.'.'   |
+'.____'.____.'____.'
+'.________________.'
 
-  commands:
-    chntpw    list users, prompt, then launch upstream chntpw
-    dislocker [-r|-rw] unlock and mount all BitLocker Windows volumes
-    mount     [-r|-rw] scan and mount all Windows volumes
-    scan      list NTFS and BitLocker candidate volumes
-    users     export SAM user data with reged and show decoded users
-    loot      collect offline Windows secrets to USB loot or encrypted fallback
-    unmount   unmount Boot1oot Windows and dislocker mountpoints
-    init      show the OS banner and start the shell
+usage: boot1oot <command> [options]
+
+commands:
+  chntpw    list users, prompt, then launch upstream chntpw
+  dislocker [-r|-rw] unlock and mount all BitLocker Windows volumes
+  mount     -r|-rw scan and mount all Windows volumes
+  scan      list NTFS and BitLocker candidate volumes
+  users     export SAM user data with reged and show decoded users
+  loot      collect offline Windows secrets to USB loot or encrypted fallback
+  unmount   unmount Boot1oot Windows and dislocker mountpoints
 ```
 
-![alt text](img/boot1oot.gif)
+![Boot1oot CLI preview](img/boot1oot.gif)
 
-## ISO Profile
+## Artifacts
 
-- x86_64 Linux kernel
-- BIOS and UEFI boot support
-- BusyBox init with an interactive bash console
-- RAM-only initramfs root filesystem
-- optional `/loot` artifact storage partition on USB-written images
-- no kernel networking support
-- no editors
-- VMware-friendly storage drivers: SATA/AHCI, NVMe, SCSI, VMware PVSCSI, VirtIO
+- `boot1oot.iso`: BIOS/UEFI ISO for virtual CD/DVD boot.
+- `boot1oot.img`: BIOS/UEFI raw USB image with a writable `B1OOT_LOOT`
+  partition.
 
-## Baked-In Tools
+Use the ISO for VMs. Use the IMG for physical USB media when you want persistent
+loot storage on the USB device.
 
-- `boot1oot`: Windows volume scanner, mounter, BitLocker wrapper, and unmount
-  helper.
-- `dislocker-fuse`: unlocks BitLocker volumes through FUSE.
-- `dislocker-metadata`: prints BitLocker metadata before unlock attempts.
-- `chntpw`: interactive offline Windows SAM/registry editor and user lister.
-- `samusrgrp`: local SAM group membership helper for manual workflows.
-- `sampasswd`: noninteractive local SAM password reset helper.
-- `reged`: offline registry export/import/editor helper.
-- `ntfs-3g`: mounts dislocker's decrypted `dislocker-file`.
-- `openssl`: encrypts Windows-hosted fallback loot archives.
-- kernel `ntfs3`: mounts normal unencrypted NTFS partitions.
-- `bash`: console shell with `boot1oot` command in path.
-- BusyBox userland: minimal shell and basic Unix commands.
+## Commands
 
-The ISO credits dislocker from `github.com/Aorimn/dislocker` and chntpw from
-`pogostick.net/~pnh/ntpasswd`.
+```text
+boot1oot scan          list NTFS and BitLocker candidate volumes
+boot1oot mount -r      mount detected Windows volumes read-only
+boot1oot mount -rw     mount detected Windows volumes read-write
+boot1oot dislocker -r  unlock and mount BitLocker volumes read-only
+boot1oot loot          collect offline artifacts to USB loot or fallback archive
+boot1oot users         export and show local SAM users
+boot1oot chntpw        launch interactive chntpw for a selected user
+boot1oot unmount       unmount Boot1oot-managed mountpoints
+```
 
-## What It Does
+`boot1oot mount` requires either `-r` or `-rw`.
 
-`boot1oot scan` identifies candidate Windows filesystems by boot-sector
-signatures:
+## Typical Flow
 
-- `NTFS    ` for normal NTFS
-- `-FVE-FS-` for BitLocker/FVE
+```sh
+boot1oot scan
+boot1oot mount -r
+boot1oot loot
+cd /
+boot1oot unmount
+poweroff
+```
 
-`boot1oot mount` mounts every detected Windows candidate under:
+For write-capable workflows:
+
+```sh
+boot1oot mount -rw
+```
+
+Mounted Windows volumes appear under:
 
 ```text
 /mnt/windows/<device>
 ```
-![alt text](img/booty.gif)
 
 Examples:
 
@@ -101,175 +96,40 @@ Examples:
 /mnt/windows/nvme0n1p3
 ```
 
-Mounted NTFS volumes are classified from filesystem contents as:
+![Boot1oot mount preview](img/booty.gif)
 
-- `windows-root`
-- `windows-recovery`
-- `windows-boot`
-- `windows-data`
-- `unknown-ntfs`
+## Loot Output
 
-For BitLocker volumes, Boot1oot checks metadata with `dislocker-metadata`,
-unlocks with `dislocker-fuse`, validates that the decrypted virtual volume is
-NTFS, then mounts the exposed `dislocker-file` with `ntfs-3g`.
-
-The live OS root filesystem remains RAM-only. `boot1oot loot` stages offline
-Windows-at-rest audit artifacts under `/tmp`, tries to write them to the USB
-loot partition, then unmounts `/loot`. If no writable USB loot partition is
-available, it writes an encrypted archive under `C:\Users\Public\Boot1oot`.
-
-## Commands
-
-The console supports tab completion for `boot1oot` subcommands:
-
-```sh
-boot1oot <tab>
-```
-
-Scan without mounting:
-
-```sh
-boot1oot scan
-```
-
-Mount read-only. This is the default:
-
-```sh
-boot1oot mount
-boot1oot mount -r
-```
-
-Mount read-write:
-
-```sh
-boot1oot mount -rw
-```
-
-Only process BitLocker candidates:
-
-```sh
-boot1oot dislocker
-boot1oot dislocker -rw
-```
-
-Collect offline Windows secret material at rest:
-
-```sh
-boot1oot loot
-```
-
-The command collects local registry hives (`SAM`, `SYSTEM`, `SECURITY`,
-`SOFTWARE`, `DEFAULT`) with transaction logs, RegBack if present, machine/user
-DPAPI material, Credential Manager/Vault paths, local crypto material, and
-`NTDS.dit` when the host is a domain controller. It does not collect live
-runtime memory such as `lsass.exe`.
-
-USB-written images save the staged directory to `/loot/<collection-id>` and
-unmount `/loot` afterward. Virtual ISO boots normally have no writable USB loot
-partition, so the fallback creates `/tmp/<collection-id>.tar.enc` with OpenSSL
-AES-256-CBC/PBKDF2 and copies it to `C:\Users\Public\Boot1oot`. Set
-`BOOT1OOT_LOOT_PASSPHRASE` for the fallback archive passphrase; if unset,
-Boot1oot uses the built-in fallback passphrase `boot1oot`.
-
-## Extracting Loot
-
-![alt text](img/boot-T.gif)
-
-USB path:
-
-1. Boot Windows, Linux, or macOS after shutting Boot1oot down cleanly.
-2. Open the USB partition labeled `BOOT1OOT_LOOT`.
-3. Copy the newest `boot1oot-loot-<time>-<pid>` directory.
-
-The USB loot path is a normal directory, not encrypted by Boot1oot.
-
-Fallback path:
-
-If Boot1oot could not mount the USB loot partition, it writes an encrypted file
-to the audited Windows filesystem:
+USB image boots write loot to the FAT partition labeled `B1OOT_LOOT`:
 
 ```text
-C:\Users\Public\Boot1oot\boot1oot-loot-<time>-<pid>.tar.enc
+/loot/<collection-id>
 ```
 
-Decrypt it on Linux/macOS/WSL:
-
-```sh
-openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
-  -pass pass:boot1oot \
-  -in boot1oot-loot-<time>-<pid>.tar.enc \
-  -out boot1oot-loot-<time>-<pid>.tar
-
-tar -xf boot1oot-loot-<time>-<pid>.tar
-```
-
-Use `BOOT1OOT_LOOT_PASSPHRASE` as the passphrase. If that was not configured,
-use the built-in fallback passphrase:
+ISO boots usually do not have writable USB loot storage. In that case Boot1oot
+creates an encrypted fallback archive under:
 
 ```text
-boot1oot
+C:\Users\Public\Boot1oot
 ```
 
-If `BOOT1OOT_LOOT_PASSPHRASE` was set to a custom value when the archive was
-created, replace `-pass pass:boot1oot` with your custom passphrase or omit
-`-pass ...` and let OpenSSL prompt for it.
+Set `BOOT1OOT_LOOT_PASSPHRASE` before running `boot1oot loot` to choose the
+fallback archive passphrase. If unset, the fallback passphrase is `boot1oot`.
 
-Run Impacket secretsdump against the extracted local hives:
+![Boot1oot loot preview](img/boot-T.gif)
 
-```sh
-cd boot1oot-loot-<time>-<pid>/windows/Windows/System32/config
-secretsdump.py -sam SAM -system SYSTEM -security SECURITY LOCAL
-```
+## Included Tools
 
-Export the relevant SAM user/group branches with `reged`, then show the
-decoded local SAM user table:
+- `boot1oot`
+- `dislocker-fuse`
+- `dislocker-metadata`
+- `ntfs-3g`
+- `chntpw`
+- `reged`
+- `samusrgrp`
+- `sampasswd`
+- `openssl`
+- BusyBox and bash
 
-```sh
-boot1oot users
-```
-
-Launch chntpw interactively. This lists users first, prompts for a username,
-then runs chntpw with the detected `SAM`, `SYSTEM`, and `SECURITY` hives:
-
-```sh
-boot1oot chntpw
-```
-
-`boot1oot users` mounts read-only if needed, exports SAM branches with
-`reged -x`, copies `SAM` to `/tmp` for read-only decoding, and then shows the
-decoded user table. `ADMIN` and `*BLANK*` come from the bundled SAM decoder.
-
-```text
-reged -x SAM HKEY_LOCAL_MACHINE\SAM \SAM\Domains\Account\Users /tmp/boot1oot-sam-users.reg
-```
-
-The interactive edit path mounts read-write if needed, then passes the selected
-user plus the detected `SAM`, `SYSTEM`, and `SECURITY` hives to upstream chntpw.
-
-The raw `chntpw`, `sampasswd`, `samusrgrp`, and `reged` tools are also included
-for manual research workflows.
-
-Unmount Boot1oot-managed Windows and dislocker mountpoints:
-
-```sh
-cd /
-boot1oot unmount
-```
-
-Shut down:
-
-```sh
-poweroff
-```
-
-## VMware Test Notes
-
-Create a VM with:
-
-- Guest OS: Other Linux 5.x or later kernel, 64-bit
-- Firmware: BIOS or UEFI
-- Memory: 256 MB minimum
-- Network adapter: removed
-- CD/DVD: release `boot1oot.iso`
-
-The ISO boots into a minimal shell after showing the Boot1oot banner.
+Build instructions are in [SETUP.md](SETUP.md). USB and VM boot instructions
+are in [ISO.md](ISO.md).

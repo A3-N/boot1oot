@@ -18,6 +18,7 @@ rm -f "$target/etc/resolv.conf"
 old_name="boot1l""oot"
 rm -f "$target/bin/$old_name" "$target/sbin/$old_name" \
 	"$target/usr/bin/$old_name" "$target/usr/sbin/$old_name"
+rm -f "$target/etc/profile.d/boot1oot-config.sh"
 
 if [ "${BOOT1OOT_EXPORT_CONFIG:-0}" = "1" ] &&
 	{ [ -n "${BOOT1OOT_BITLOCKER_RECOVERY_KEY:-}" ] || [ -n "${BOOT1OOT_LOOT_PASSPHRASE:-}" ]; }; then

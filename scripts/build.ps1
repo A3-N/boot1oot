@@ -1,6 +1,8 @@
 param(
     [string]$Distro = "",
     [string]$BuildrootDir = "",
+    [ValidateSet("iso", "img", "both")]
+    [string]$Artifact = "",
     [switch]$Clean
 )
 
@@ -25,13 +27,18 @@ if (-not $linuxRepo) {
 $linuxRepoQuoted = $linuxRepo.Replace("'", "'\''")
 $cleanPath = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 $cleanEnv = ""
+$artifactEnv = ""
 
 if ($Clean) {
     $cleanEnv = "CLEAN=1 "
 }
 
+if ($Artifact -ne "") {
+    $artifactEnv = "ARTIFACT='$Artifact' "
+}
+
 if ($BuildrootDir -eq "") {
-    & wsl.exe @distroArgs --exec bash -lc "export PATH='$cleanPath'; cd '$linuxRepoQuoted' && ${cleanEnv}bash scripts/build.sh"
+    & wsl.exe @distroArgs --exec bash -lc "export PATH='$cleanPath'; cd '$linuxRepoQuoted' && ${cleanEnv}${artifactEnv}bash scripts/build.sh"
     exit $LASTEXITCODE
 }
 
@@ -49,4 +56,4 @@ if (-not $linuxBuildroot) {
 }
 
 $linuxBuildrootQuoted = $linuxBuildroot.Replace("'", "'\''")
-& wsl.exe @distroArgs --exec bash -lc "export PATH='$cleanPath'; cd '$linuxRepoQuoted' && ${cleanEnv}BUILDROOT_DIR='$linuxBuildrootQuoted' bash scripts/build.sh"
+& wsl.exe @distroArgs --exec bash -lc "export PATH='$cleanPath'; cd '$linuxRepoQuoted' && ${cleanEnv}${artifactEnv}BUILDROOT_DIR='$linuxBuildrootQuoted' bash scripts/build.sh"

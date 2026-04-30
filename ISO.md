@@ -1,234 +1,80 @@
-# ISO Usage
+# Boot and USB Usage
 
-This guide covers writing the Boot1oot ISO to USB media and booting it on
-physical machines or virtual machines.
+Boot1oot ships as two artifacts:
 
-Boot1oot uses a RAM-only live root filesystem. USB-written images include a
-small writable loot partition that can be mounted at `/loot` for audit
-artifacts. When booted as a read-only virtual ISO, `/loot` will usually be
-unavailable and tools should use the Windows-hosted encrypted archive fallback
-instead.
+- `boot1oot.iso` for VM or virtual CD/DVD boot.
+- `boot1oot.img` for raw USB writing with persistent loot storage.
 
-## Before You Boot
+The live root filesystem is RAM-only in both modes. The USB image adds a
+writable FAT partition labeled `B1OOT_LOOT`.
 
-- Back up anything important on the USB drive. Flashing the ISO overwrites it.
-- Use a USB drive you can dedicate to Boot1oot.
-- If Secure Boot is enabled, the unsigned Boot1oot ISO may not boot. Disable
-  Secure Boot or use a firmware profile that allows unsigned external media.
-- If Windows uses BitLocker, external boot or firmware changes may trigger a
-  BitLocker recovery prompt on the next Windows boot. Keep the recovery key
-  available for managed-device audit work.
-- Prefer a full shutdown before testing physical hardware:
+## Before Booting
+
+- Use a dedicated USB drive; writing `boot1oot.img` overwrites it.
+- Disable Secure Boot if the unsigned image is blocked.
+- Keep BitLocker recovery keys available for systems that enforce recovery
+  after external boot or firmware changes.
+- Prefer a full Windows shutdown before read-write filesystem work:
 
 ```powershell
 shutdown /s /t 0
 ```
 
-Windows Fast Startup can leave disks in a hibernated state, which can make
-read-write NTFS work unsafe or fail.
+## Write USB Media
 
-## Windows USB Flashing
+### Windows
 
-### Rufus
+Use Rufus or another raw-image writer:
 
-1. Insert the USB drive.
-2. Open Rufus.
-3. Select the USB drive under `Device`.
-4. Select `boot1oot.iso` under `Boot selection`.
-5. Use the default partition scheme Rufus suggests for the target firmware.
-   - `GPT` for modern UEFI systems.
-   - `MBR` for legacy BIOS or older mixed systems.
-6. Start the write process.
-7. If Rufus asks between ISO mode and DD mode, use DD mode if ISO mode does not
-   boot on the target hardware.
+1. Select the USB drive.
+2. Select `boot1oot.img`.
+3. Use raw image mode when prompted.
+4. Start the write.
 
-Rufus normally needs administrator approval because it writes directly to a
-physical USB device.
-
-### Windows Built-In ISO Mounting
-
-Windows can mount an ISO, but mounting is not the same as making a bootable USB.
-Use Rufus or another raw-image writer for USB boot media.
-
-For VMware, Hyper-V, or another hypervisor, attach `boot1oot.iso` directly as a
-virtual CD/DVD image. A virtual CD/DVD is read-only, so the `/loot` USB
-partition path is not available in this mode.
-
-## Linux USB Flashing
-
-Find the USB device:
+### Linux
 
 ```sh
 lsblk
-```
-
-Unmount any mounted partitions on that USB:
-
-```sh
 sudo umount /dev/sdX*
-```
-
-Write the ISO:
-
-```sh
-sudo dd if=dist/boot1oot.iso of=/dev/sdX bs=4M status=progress oflag=sync
+sudo dd if=dist/boot1oot.img of=/dev/sdX bs=4M status=progress oflag=sync
 sync
 ```
 
-Replace `/dev/sdX` with the whole USB disk, not a partition such as
-`/dev/sdX1`.
+Replace `/dev/sdX` with the whole USB disk, not a partition.
 
-## macOS USB Flashing
-
-List disks:
+### macOS
 
 ```sh
 diskutil list
-```
-
-Unmount the USB disk:
-
-```sh
 diskutil unmountDisk /dev/diskN
-```
-
-Write the ISO:
-
-```sh
-sudo dd if=dist/boot1oot.iso of=/dev/rdiskN bs=4m status=progress
+sudo dd if=dist/boot1oot.img of=/dev/rdiskN bs=4m status=progress
 sync
-```
-
-Eject when done:
-
-```sh
 diskutil eject /dev/diskN
 ```
 
-Use `rdiskN` for the write path because it is the raw disk device and is usually
-faster. Replace `N` with the USB disk number from `diskutil list`.
+## Boot Options
 
-## Booting From Windows
+For physical machines, use the firmware one-time boot menu and choose the USB
+entry. On UEFI systems, prefer the entry beginning with `UEFI:` when both legacy
+and UEFI entries are shown.
 
-### Shift-Restart
+From Windows, Shift-Restart can also expose firmware boot entries:
 
-1. Hold `Shift`.
-2. Click `Restart` from the Windows power menu.
-3. Select `Use a device`.
-4. Pick the USB drive or USB UEFI entry.
+1. Hold `Shift` while selecting `Restart`.
+2. Choose `Use a device`.
+3. Select the USB drive.
 
-This is the least invasive OS-side path when the firmware exposes USB boot
-entries to Windows Recovery.
-
-### Advanced Startup
-
-1. Open Settings.
-2. Go to `System` -> `Recovery`.
-3. Select `Advanced startup`.
-4. Choose `Restart now`.
-5. Select `Use a device`.
-6. Pick the USB drive.
-
-On older Windows layouts, this may be under `Update & Security` -> `Recovery`.
-
-### Reboot Directly To Firmware
-
-From an elevated PowerShell or Command Prompt:
-
-```powershell
-shutdown /r /fw /t 0
-```
-
-This requires administrator rights. It asks UEFI firmware to open setup on the
-next reboot. It only works on UEFI systems that support the firmware reboot
-request.
-
-## Firmware Boot Options
-
-### One-Time Boot Menu
-
-Most systems have a one-time boot menu key shown briefly during startup.
-Common keys include:
-
-- `F12`
-- `F11`
-- `F10`
-- `Esc`
-- `F8`
-
-Choose the USB device. On UEFI machines, prefer the entry that starts with
-`UEFI:` if both legacy and UEFI entries are shown.
-
-### UEFI/BIOS Boot Order
-
-Enter firmware setup, then move the USB device above the internal disk in the
-boot order. Common setup keys include:
-
-- `Del`
-- `F2`
-- `F10`
-- `Esc`
-
-After the audit, restore the internal Windows disk as the first boot option.
-
-## Booting An ISO In A VM
-
-Attach `boot1oot.iso` as a virtual CD/DVD image and put the virtual CD/DVD drive
-above the virtual hard disk in the VM boot order.
-
-For VMware testing:
-
-1. Edit VM settings.
-2. Set CD/DVD to use `boot1oot.iso`.
-3. Connect it at power on.
-4. Boot with BIOS or UEFI firmware.
-
-Boot1oot supports both BIOS and UEFI boot paths.
-
-## Artifact Storage
-
-Preferred USB path:
-
-```sh
-boot1oot loot
-```
-
-This stages offline Windows-at-rest artifacts in RAM, mounts the Boot1oot loot
-partition at:
-
-```text
-/loot
-```
-
-It then copies the staged collection to `/loot/<collection-id>` and unmounts
-`/loot`. The generated ISO appends a FAT partition labeled `BOOT1OOT_LOOT`.
-When the ISO is written to a USB drive, that partition is writable and can hold
-the collection.
-
-Fallback Windows-host path:
-
-```text
-C:\Users\Public\Boot1oot
-```
-
-This fallback is for virtual ISO boots or systems where no writable USB loot
-partition is available. `boot1oot loot` creates an OpenSSL-encrypted
-`<collection-id>.tar.enc` archive before placing artifacts there, because the
-folder is intentionally readable by normal local users for easy retrieval after
-Windows boots. Set `BOOT1OOT_LOOT_PASSPHRASE` before running the command if you
-do not want to use the built-in fallback passphrase `boot1oot`.
+For VMs, attach `boot1oot.iso` as a virtual CD/DVD and boot from it.
 
 ## After Boot
 
-The system drops to a minimal `boot1oot` shell. Start with:
-
 ```sh
 boot1oot scan
-boot1oot mount
+boot1oot mount -r
 boot1oot loot
 ```
 
-For write-capable Windows filesystem work:
+For write-capable filesystem work:
 
 ```sh
 boot1oot mount -rw
@@ -241,3 +87,31 @@ cd /
 boot1oot unmount
 poweroff
 ```
+
+## Retrieving Loot
+
+USB image boots write to:
+
+```text
+B1OOT_LOOT:/boot1oot-loot-<time>-<pid>
+```
+
+ISO boots or systems without writable USB loot storage use the encrypted fallback:
+
+```text
+C:\Users\Public\Boot1oot\boot1oot-loot-<time>-<pid>.tar.enc
+```
+
+Decrypt fallback archives with:
+
+```sh
+openssl enc -d -aes-256-cbc -pbkdf2 -iter 200000 \
+  -pass pass:boot1oot \
+  -in boot1oot-loot-<time>-<pid>.tar.enc \
+  -out boot1oot-loot-<time>-<pid>.tar
+
+tar -xf boot1oot-loot-<time>-<pid>.tar
+```
+
+Use your configured `BOOT1OOT_LOOT_PASSPHRASE` instead of `boot1oot` if you set
+one before collection.

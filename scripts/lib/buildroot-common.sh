@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 BOOT1OOT_BUILDROOT_URL="${BOOT1OOT_BUILDROOT_URL:-https://gitlab.com/buildroot.org/buildroot.git}"
-BOOT1OOT_CLEAN_PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+BOOT1OOT_CLEAN_PATH="${BOOT1OOT_CLEAN_PATH:-/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin}"
 
 boot1oot_sanitize_path() {
 	export PATH="$BOOT1OOT_CLEAN_PATH"
@@ -158,6 +158,7 @@ boot1oot_missing_commands() {
 		g++
 		git
 		grub-mkrescue
+		grub-mkstandalone
 		make
 		mcopy
 		mformat
@@ -166,6 +167,8 @@ boot1oot_missing_commands() {
 		python3
 		realpath
 		rsync
+		sfdisk
+		syslinux
 		tar
 		unzip
 		wget
@@ -212,8 +215,9 @@ Install missing Debian/Ubuntu/Kali packages with:
 
   sudo apt update
   sudo apt install -y build-essential bc bison flex cpio file git libncurses-dev \
-    libelf-dev patch perl python3 rsync tar unzip wget grub-common grub-pc-bin \
-    grub-efi-amd64-bin xorriso mtools
+    libelf-dev patch perl python3 rsync tar unzip wget util-linux \
+    grub-common grub-pc-bin grub-efi-amd64-bin xorriso mtools syslinux \
+    syslinux-common
 
 EOF
 }

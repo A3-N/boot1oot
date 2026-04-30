@@ -19,6 +19,22 @@ dl_dir="${DL_DIR:-$(boot1oot_default_dl_dir)}"
 defconfig="${DEFCONFIG:-boot1oot_x86_64_defconfig}"
 jobs="${JOBS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 2)}"
 clean="${CLEAN:-0}"
+artifact="${ARTIFACT:-iso}"
+
+case "$artifact" in
+	iso|img|both) ;;
+	*)
+		cat >&2 <<EOF
+Unsupported ARTIFACT value: $artifact
+
+Use one of:
+  ARTIFACT=iso   bash scripts/build.sh
+  ARTIFACT=img   bash scripts/build.sh
+  ARTIFACT=both  bash scripts/build.sh
+EOF
+		exit 1
+		;;
+esac
 
 if [[ "$clean" == "1" ]]; then
 	boot1oot_clean_output_dir "$repo_root" "$output_dir"
@@ -53,4 +69,15 @@ rm -f "$output_dir/images/rootfs.cpio" "$output_dir/images/rootfs.cpio.gz"
 
 make -C "$buildroot_dir" O="$output_dir" BR2_EXTERNAL="$repo_root/buildroot-external" BR2_DL_DIR="$dl_dir" -j"$jobs"
 
-OUTPUT_DIR="$output_dir" bash "$repo_root/scripts/make-iso.sh"
+case "$artifact" in
+	iso)
+		OUTPUT_DIR="$output_dir" bash "$repo_root/scripts/make-iso.sh"
+		;;
+	img)
+		OUTPUT_DIR="$output_dir" bash "$repo_root/scripts/make-usb-img.sh"
+		;;
+	both)
+		OUTPUT_DIR="$output_dir" bash "$repo_root/scripts/make-iso.sh"
+		OUTPUT_DIR="$output_dir" bash "$repo_root/scripts/make-usb-img.sh"
+		;;
+esac
