@@ -33,6 +33,14 @@ sudo apt install -y \
   grub-efi-amd64-bin xorriso mtools syslinux syslinux-common util-linux
 ```
 
+For offline loot extraction on the analyst machine, also install Impacket's
+example tools. The helper script supports both upstream and distro command
+names:
+
+```sh
+sudo apt install -y impacket-scripts
+```
+
 ## Setup
 
 ```sh
@@ -85,7 +93,7 @@ and a FAT loot partition.
 Change the USB loot partition size:
 
 ```sh
-ARTIFACT=img LOOT_SIZE=128M bash scripts/build.sh
+ARTIFACT=img LOOT_SIZE=1G bash scripts/build.sh
 ```
 
 Clean generated output:

