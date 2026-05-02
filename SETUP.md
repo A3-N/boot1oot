@@ -34,7 +34,7 @@ sudo apt install -y \
 ```
 
 For offline loot extraction on the analyst machine, also install Impacket's
-example tools. The helper script supports both upstream and distro command
+example tools. The example wrapper supports both upstream and distro command
 names:
 
 ```sh

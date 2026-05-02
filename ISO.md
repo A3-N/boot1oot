@@ -145,48 +145,39 @@ Targeted machine/application artifacts:
 
 ## Offline Extraction Examples
 
-Use the helper script to run the offline extraction flow:
+Use the example wrapper to run a basic offline extraction flow:
 
 ```sh
-python3 scripts/boot1oot-extract.py /path/to/boot1oot-loot-<time>-<pid>
+python3 scripts/boot1oot-extract-example.py /path/to/boot1oot-loot-<time>-<pid>
 ```
 
-The helper auto-detects `secretsdump.py` / `impacket-secretsdump` and
-`dpapi.py` / `impacket-dpapi`. By default it prints concise results and artifact
-locations only. It does not write reports or raw tool output unless `-o` is set:
+The example auto-detects `secretsdump.py` / `impacket-secretsdump` and
+`dpapi.py` / `impacket-dpapi`. It is intentionally a thin wrapper: it prints the
+raw output from each tool and lists notable collected files. It does not write
+reports or JSON. Use `-o` only when you want raw command transcripts saved:
 
 ```sh
-python3 scripts/boot1oot-extract.py /path/to/boot1oot-loot-<time>-<pid> -o extracted
+python3 scripts/boot1oot-extract-example.py /path/to/boot1oot-loot-<time>-<pid> -o extracted
 ```
 
-For local accounts, the helper normally gets NT hashes from the offline
-`SAM`/`SYSTEM` hives and tries them against matching profile names. For user
-DPAPI material, provide the user's password when available:
+For user DPAPI masterkeys, provide a password or NT hash when available:
 
 ```sh
-python3 scripts/boot1oot-extract.py /path/to/boot1oot-loot-<time>-<pid> \
-  --password alice='<password>'
+python3 scripts/boot1oot-extract-example.py /path/to/boot1oot-loot-<time>-<pid> \
+  --password '<password>'
 ```
 
-If automatic SAM-to-profile matching is wrong or unavailable, override it with a
-known NT hash:
+or:
 
 ```sh
-python3 scripts/boot1oot-extract.py /path/to/boot1oot-loot-<time>-<pid> \
-  --hash alice=<nthash>
+python3 scripts/boot1oot-extract-example.py /path/to/boot1oot-loot-<time>-<pid> \
+  --hash <nthash>
 ```
 
-If profile names do not match local account names, bind key material directly to
-the SID folder found under `Users/<user>/AppData/*/Microsoft/Protect`:
-
-```sh
-python3 scripts/boot1oot-extract.py /path/to/boot1oot-loot-<time>-<pid> \
-  --sid-hash S-1-5-21-...-1001=<nthash>
-```
-
-Use `--try-all-hashes` to try every local NT hash parsed from `secretsdump`
-against each collected user DPAPI SID. Use `--try-all-masterkeys` when a blob
-does not expose a clean masterkey GUID.
+Use `--try-all` to try every local NT hash parsed from `secretsdump` against
+each collected user DPAPI SID. The wrapper does not try to interpret or
+post-process successful DPAPI output; use the raw `Decrypted key: 0x...` value
+with the manual commands below when needed.
 
 Manual `secretsdump.py` reference:
 

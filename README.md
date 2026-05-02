@@ -119,10 +119,10 @@ fallback archive passphrase. If unset, the fallback passphrase is `boot1oot`.
 The collected artifact list and offline extraction notes are in
 [ISO.md](ISO.md#collected-artifacts).
 
-An offline helper is included for retrieved loot:
+An example offline wrapper is included for retrieved loot:
 
 ```sh
-python3 scripts/boot1oot-extract.py /path/to/boot1oot-loot-<time>-<pid>
+python3 scripts/boot1oot-extract-example.py /path/to/boot1oot-loot-<time>-<pid>
 ```
 
 ![Boot1oot loot preview](img/boot-T.gif)
