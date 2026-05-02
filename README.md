@@ -7,6 +7,8 @@ unmount cleanly before returning to Windows.
 
 Recommended: [download the latest release](https://github.com/A3-N/boot1oot/releases/latest)
 
+Blog: https://adriaanbosch.com/blogs/how_bitlocker_and_entra_hand_you_local_admin_on_a_managed_device
+
 Manual compile instructions: [SETUP.md](SETUP.md)
 
 USB and VM boot instructions: [ISO.md](ISO.md)
